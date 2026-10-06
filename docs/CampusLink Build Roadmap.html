@@ -1,0 +1,289 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>CampusLink Build Roadmap</title>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Bricolage+Grotesque:wght@600;700&family=Public+Sans:wght@400;500;600&display=swap">
+<style>
+:root{--bg:#f3f5f2;--ink:#14202b;--mute:#4d5b66;--card:#ffffff;--line:#d5dcd8;--acc:#1f6f8b;--flag:#b7791f;--bad:#b23a3a;--ok:#2f7d4f;
+box-sizing:border-box;padding-top:env(safe-area-inset-top,0px);padding-bottom:env(safe-area-inset-bottom,0px)}
+@media (prefers-color-scheme:dark){:root:not([data-theme="light"]){--bg:#0f171d;--ink:#e6edf0;--mute:#9bacb6;--card:#16212a;--line:#2a3945;--acc:#5bb4d1;--flag:#e0a94a;--bad:#e27a7a;--ok:#6fc08f}}
+:root[data-theme="dark"]{--bg:#0f171d;--ink:#e6edf0;--mute:#9bacb6;--card:#16212a;--line:#2a3945;--acc:#5bb4d1;--flag:#e0a94a;--bad:#e27a7a;--ok:#6fc08f}
+html{scroll-padding-top:env(safe-area-inset-top,0px)}
+*{box-sizing:border-box}
+body{margin:0;background:var(--bg);color:var(--ink);font:400 16px/1.6 "Public Sans",system-ui,sans-serif}
+main{max-width:980px;margin:0 auto;padding:32px 20px 64px}
+h1,h2,h3{font-family:"Bricolage Grotesque","Public Sans",system-ui,sans-serif;line-height:1.2;margin:0}
+h1{font-size:clamp(2rem,5vw,3rem);font-weight:700}
+h2{font-size:1.6rem;margin:56px 0 8px;font-weight:700}
+h3{font-size:1.1rem;margin:24px 0 6px}
+p{margin:6px 0 12px;max-width:70ch}
+.lead{color:var(--mute);font-size:1.1rem}
+.roles{display:grid;grid-template-columns:repeat(auto-fit,minmax(220px,1fr));gap:12px;margin:20px 0}
+.role{background:var(--card);border:1px solid var(--line);border-left:4px solid var(--acc);border-radius:6px;padding:14px 16px}
+.role b{display:block;margin-bottom:4px}
+.role span{color:var(--mute);font-size:.95rem}
+.chart{background:var(--card);border:1px solid var(--line);border-radius:8px;padding:16px;overflow-x:auto;margin:16px 0}
+.chart pre{margin:0;min-width:640px}
+.scroll{overflow-x:auto;margin:12px 0}
+table{border-collapse:collapse;width:100%;min-width:560px;background:var(--card);font-size:.95rem}
+th,td{border:1px solid var(--line);padding:8px 10px;text-align:left;vertical-align:top}
+th{background:color-mix(in srgb,var(--acc) 12%,var(--card));font-weight:600}
+code{font-family:ui-monospace,Menlo,Consolas,monospace;font-size:.88em;background:color-mix(in srgb,var(--acc) 10%,transparent);padding:1px 5px;border-radius:4px}
+.red{color:var(--bad);font-weight:600}.yel{color:var(--flag);font-weight:600}.grn{color:var(--ok);font-weight:600}
+.phase{background:var(--card);border:1px solid var(--line);border-radius:8px;padding:16px 18px;margin:14px 0}
+.phase h3{margin:0 0 6px}
+.phase ul{margin:6px 0 0;padding-left:20px}
+.phase li{margin:3px 0}
+.done{color:var(--mute);font-size:.92rem;margin-top:8px}
+</style>
+</head>
+<body>
+<main>
+<h1>CampusLink build roadmap</h1>
+<p class="lead">One backend, one database, three dashboards. Every dashboard is a filtered view of the same records, and a status field moves work from one person to the next.</p>
+
+<div class="roles">
+<div class="role"><b>Student</b><span>Registers, uploads resume, sees eligible drives, opts in, tracks status and offers.</span></div>
+<div class="role"><b>Recruiter</b><span>Posts a job, sees ranked students, picks the top 50, releases offers.</span></div>
+<div class="role"><b>Placement cell (admin)</b><span>Loads official records, approves at three gates, schedules drives, watches analytics.</span></div>
+</div>
+
+<h2>1. Complete flow</h2>
+<p>Diamonds are admin approval gates. Nothing moves to the next person until the admin clicks approve.</p>
+<div class="chart"><pre class="mermaid">
+flowchart TD
+  M["Admin uploads master academic records (CSV, once)"] --> R["Student registers with roll number"]
+  R --> L["Branch, CGPA, backlogs auto-filled and locked"]
+  L --> U["Student uploads resume, adds skills, projects, certificates"]
+  U --> P["Resume parsed: readiness level and skill gaps"]
+  J["Recruiter posts job: JD, min CGPA, branches, backlogs, CTC"] --> G1{"Gate 1: Admin approves job?"}
+  G1 -->|No| J
+  G1 -->|Yes| O["Drive open for opt-in"]
+  P --> E{"Eligible? Rules run on master data"}
+  O --> E
+  E -->|No| X["Apply disabled, reason shown"]
+  E -->|Yes| OP["Student clicks Opt-in"]
+  OP --> V["Auto verification: resume and entries vs master record"]
+  V --> G2{"Gate 2: Admin verifies?"}
+  G2 -->|Reject| RJ["Rejected, student notified"]
+  G2 -->|Approve| RK["Ranking engine: fit score and reasons"]
+  RK --> RC["Recruiter sees ranked list, picks top 50"]
+  RC --> G3{"Gate 3: Admin approves list, conflict check runs"}
+  G3 -->|Send back| RC
+  G3 -->|Approve| SH["Students see Shortlisted, notification sent"]
+  SH --> IN["Interviews"]
+  IN --> OF["Offer tracking: accept, defer, withdraw, documents"]
+  OF --> AN["Analytics dashboard and at-risk students"]
+</pre></div>
+
+<h2>2. Status flow</h2>
+<p>This is the glue between dashboards. Each admin click changes one status field, and the next dashboard already asks for that status.</p>
+<div class="chart"><pre class="mermaid">
+stateDiagram-v2
+  direction LR
+  [*] --> pending_admin_review
+  pending_admin_review --> open_for_optin : admin approves
+  pending_admin_review --> drive_rejected : admin rejects
+  open_for_optin --> ranking_ready : opt-in closes
+  ranking_ready --> recruiter_selected : recruiter picks top 50
+  recruiter_selected --> admin_approved : Gate 3
+  admin_approved --> shortlist_published
+  shortlist_published --> [*]
+</pre></div>
+<div class="chart"><pre class="mermaid">
+stateDiagram-v2
+  direction LR
+  [*] --> opted_in
+  opted_in --> verified : Gate 2
+  opted_in --> rejected : data mismatch
+  verified --> selected_by_recruiter
+  selected_by_recruiter --> shortlisted : Gate 3
+  selected_by_recruiter --> verified : admin sends back
+  shortlisted --> offered
+  offered --> accepted
+  offered --> deferred
+  offered --> withdrawn
+  accepted --> [*]
+</pre></div>
+
+<h2>3. Who sees what</h2>
+<div class="scroll"><table>
+<tr><th>Status</th><th>Student</th><th>Recruiter</th><th>Admin</th></tr>
+<tr><td>Drive: <code>pending_admin_review</code></td><td>Nothing</td><td>Own job, "waiting for approval"</td><td>Job review queue</td></tr>
+<tr><td>Drive: <code>open_for_optin</code></td><td>Company card, Apply button if eligible</td><td>Own job, "open"</td><td>Active drives</td></tr>
+<tr><td>App: <code>opted_in</code></td><td>"Under verification"</td><td>Nothing yet</td><td>Verification queue with flags</td></tr>
+<tr><td>App: <code>verified</code></td><td>"Verified"</td><td>Ranked list with fit score and reasons</td><td>Verified list</td></tr>
+<tr><td>App: <code>selected_by_recruiter</code></td><td>"Under review"</td><td>Selected 50</td><td>Approval queue</td></tr>
+<tr><td>App: <code>shortlisted</code></td><td>"Shortlisted"</td><td>Final list</td><td>Final list</td></tr>
+<tr><td>App: <code>offered</code> to <code>accepted</code></td><td>Offer status, documents</td><td>Offer status</td><td>Offer and document tracker</td></tr>
+</table></div>
+
+<h2>4. The three engines</h2>
+<h3>Eligibility engine (rules only)</h3>
+<p>Checks master CGPA, branch and backlogs against the drive rules. Returns yes or no with a reason. Always uses master data, never what the student typed.</p>
+<h3>Verification engine</h3>
+<p>Compares resume text and student entries with the master record.</p>
+<div class="scroll"><table>
+<tr><th>Check</th><th>Result</th></tr>
+<tr><td>Resume CGPA or backlogs differ from master</td><td class="red">Red flag: admin must review</td></tr>
+<tr><td>Skill listed but absent from resume or projects</td><td class="yel">Yellow flag: lower weight</td></tr>
+<tr><td>Certificate without proof file or link</td><td class="yel">Yellow flag: marked unverified</td></tr>
+<tr><td>Everything matches</td><td class="grn">Clean: can be approved in bulk</td></tr>
+</table></div>
+<h3>Ranking engine</h3>
+<p>Fit score out of 100. Tune the weights later.</p>
+<div class="scroll"><table>
+<tr><th>Part</th><th>Weight</th></tr>
+<tr><td>Skill match with the JD</td><td>40</td></tr>
+<tr><td>Relevant projects and certifications</td><td>20</td></tr>
+<tr><td>Mock interview and aptitude</td><td>25</td></tr>
+<tr><td>CGPA (from master record)</td><td>15</td></tr>
+</table></div>
+<p>Levels: Not Ready, Developing, Ready, Highly Employable. Each student gets a written reason based on recorded skills, projects, assessments, and academic data.</p>
+
+<h2>5. Database collections</h2>
+<div class="scroll"><table>
+<tr><th>Collection</th><th>Key fields</th></tr>
+<tr><td><code>users</code></td><td>email, password hash, role (student, recruiter, admin)</td></tr>
+<tr><td><code>master_students</code></td><td>registration_number, name, email, branch, cgpa, backlogs, passing_year (admin only)</td></tr>
+<tr><td><code>students</code></td><td>student_id, resume, parsed_skills, projects, certificates, readiness_level, skill_gaps</td></tr>
+<tr><td><code>drives</code></td><td>company, jd, required_skills, min_cgpa, branches, max_backlogs, ctc, date, slot, venue, status</td></tr>
+<tr><td><code>applications</code></td><td>drive_id, student_id, status, flags, fit_score, reasons</td></tr>
+<tr><td><code>offers</code></td><td>application_id, ctc, status, documents, joining_status</td></tr>
+<tr><td><code>notifications</code></td><td>user_id, message, read, created_at</td></tr>
+<tr><td><code>audit_log</code></td><td>who, action, record, time (mismatches and approvals)</td></tr>
+</table></div>
+
+<h2>6. API endpoints</h2>
+<div class="scroll"><table>
+<tr><th>Who</th><th>Endpoint</th><th>Status change</th></tr>
+<tr><td>Recruiter</td><td><code>POST /drives</code></td><td>to <code>pending_admin_review</code></td></tr>
+<tr><td>Admin</td><td><code>POST /admin/drives/{id}/approve</code></td><td>to <code>open_for_optin</code></td></tr>
+<tr><td>Student</td><td><code>POST /drives/{id}/optin</code></td><td>application <code>opted_in</code>, runs verification</td></tr>
+<tr><td>Admin</td><td><code>POST /admin/applications/{id}/verify</code></td><td>to <code>verified</code>, runs ranking</td></tr>
+<tr><td>Recruiter</td><td><code>POST /recruiter/drives/{id}/select</code></td><td>to <code>selected_by_recruiter</code></td></tr>
+<tr><td>Admin</td><td><code>POST /admin/drives/{id}/approve-shortlist</code></td><td>to <code>shortlisted</code>, notifies students</td></tr>
+</table></div>
+<p>Three safety rules: check the role on every call, allow only valid status jumps, and let users see only their own records.</p>
+
+<h2>7. Build order</h2>
+<div class="phase"><h3>Phase 1: Foundation</h3><ul>
+<li>FastAPI project, MongoDB, login with roles</li>
+<li>Collections above, roster uploaded from authorized college records</li>
+<li>Role check and status-transition helper</li></ul>
+<div class="done">Done when: three roles can log in and see an empty dashboard.</div></div>
+
+<div class="phase"><h3>Phase 2: Student profile</h3><ul>
+<li>Register with registration number, auto-fill and lock academic fields</li>
+<li>Resume upload, skill extraction, readiness score, skill gaps</li></ul>
+<div class="done">Done when: a student sees a readiness level and missing skills.</div></div>
+
+<div class="phase"><h3>Phase 3: Drive workflow</h3><ul>
+<li>Recruiter posts job, admin approves (Gate 1)</li>
+<li>Eligibility check, Apply button on or off with reason</li>
+<li>Opt-in creates the application</li></ul>
+<div class="done">Done when: a job travels from recruiter to admin to a student's dashboard.</div></div>
+
+<div class="phase"><h3>Phase 4: Verification and ranking</h3><ul>
+<li>Compare resume with master record, red and yellow flags</li>
+<li>Admin verification screen (Gate 2)</li>
+<li>Weighted fit score with written reasons</li></ul>
+<div class="done">Done when: a wrong CGPA gets flagged and verified students appear ranked for the recruiter.</div></div>
+
+<div class="phase"><h3>Phase 5: Selection and scheduling</h3><ul>
+<li>Recruiter picks top 50, admin approves (Gate 3)</li>
+<li>Conflict check: same date and slot, same venue, same student in two drives</li>
+<li>Notifications when students are shortlisted</li></ul>
+<div class="done">Done when: students see "Shortlisted" and double-booking is blocked.</div></div>
+
+<div class="phase"><h3>Phase 6: Offers, analytics, polish</h3><ul>
+<li>Offer and document tracker (accept, defer, withdraw)</li>
+<li>Dashboard: registered and ready students, drives, offers, branch-wise rate, packages</li>
+<li>At-risk students calculated from current readiness metrics</li>
+<li>Student chatbot for eligibility questions (optional)</li></ul>
+<div class="done">Done when: the full placement workflow runs against uploaded records.</div></div>
+
+<h2>8. End-to-end test sequence</h2>
+<p>Use authorized college roster data and real test accounts. Upload the roster, post recruiter jobs with actual requirements, log in with individual student registration numbers, upload each student's resume, and verify eligibility, applications, review gates, ranking, shortlists, offers, and analytics against the records entered.</p>
+</main>
+
+<!--claude-mermaid-runtime-begin:3477-->
+<style>.mermaid-diagram{margin-block:4px}.mermaid-diagram svg{display:block;margin:0 auto;max-width:100%;height:auto}</style>
+<script src="/_runtime/mermaid-11.16.1.min.js"></script>
+<script>(function(){
+var CFG={"palettes":{"light":{"surface":"#f4efe4","text":"#42392e","line":"#8a7f6d","border":"#7a6c52","bg":"#fffdf8"},"dark":{"surface":"#262b34","text":"#f2f3f5","line":"#a8adb8","border":"#9aa4b8","bg":"#1f232b"}}};
+if(typeof mermaid==='undefined')return;
+var pres=Array.prototype.slice.call(document.querySelectorAll('pre.mermaid')).filter(function(p){if(p.hasAttribute('data-claude-mermaid-claimed'))return false;p.setAttribute('data-claude-mermaid-claimed','1');return true;});
+if(!pres.length)return;
+var mq=window.matchMedia?window.matchMedia('(prefers-color-scheme: dark)'):null;
+var root=document.documentElement;
+var items=pres.map(function(pre){
+var mount=document.createElement('div');mount.className='mermaid-diagram';
+return {pre:pre,mount:mount,src:pre.textContent||''};
+});
+var seq=0;
+var renderGen=0;
+var lastKey='';
+function pageBg(fallback){
+var els=[document.body,document.documentElement];
+for(var i=0;i<els.length;i++){
+var c=els[i]&&getComputedStyle(els[i]).backgroundColor;
+if(c&&c!=='transparent'&&c!=='rgba(0, 0, 0, 0)')return c;
+}
+return fallback;
+}
+function render(){
+var theme=root.getAttribute('data-theme');
+var dark=theme==='dark'||(!!(mq&&mq.matches)&&theme!=='light');
+var pal=dark?CFG.palettes.dark:CFG.palettes.light;
+var bg=pageBg(pal.bg);
+var key=(dark?'d':'l')+'|'+bg;
+if(key===lastKey)return;
+lastKey=key;
+var gen=++renderGen;
+var font=getComputedStyle(document.body).fontFamily||'sans-serif';
+var nat={useMaxWidth:false};
+mermaid.initialize({
+startOnLoad:false,securityLevel:'strict',theme:'base',
+flowchart:nat,sequence:nat,er:nat,state:nat,class:nat,pie:nat,
+gantt:nat,journey:nat,timeline:nat,gitGraph:nat,mindmap:nat,xyChart:nat,
+quadrantChart:nat,sankey:nat,c4:nat,requirement:nat,block:nat,
+packet:nat,kanban:nat,architecture:nat,radar:nat,
+themeVariables:{background:bg,mainBkg:pal.surface,primaryColor:pal.surface,
+primaryTextColor:pal.text,lineColor:pal.line,primaryBorderColor:pal.border,
+nodeBorder:pal.border,clusterBorder:pal.border,edgeLabelBackground:bg,
+clusterBkg:'rgba(127,127,127,0.07)',titleColor:pal.text,
+darkMode:dark,rowOdd:bg,rowEven:'rgba(127,127,127,0.07)',
+attributeBackgroundColorOdd:bg,attributeBackgroundColorEven:'rgba(127,127,127,0.07)',
+fontSize:'16px',fontFamily:font},
+themeCSS:'.node rect, .node circle, .node polygon, .node path, .cluster rect { stroke-width: 2px; }'
+});
+items.forEach(function(it){
+var id='claude-mermaid-'+seq++;
+mermaid.render(id,it.src).then(function(r){
+if(gen!==renderGen)return;
+var prev=it.pre.previousElementSibling;
+if(prev&&prev.className==='mermaid-diagram'&&prev!==it.mount)return;
+it.mount.innerHTML=r.svg;
+if(!it.mount.parentNode)it.pre.parentNode.insertBefore(it.mount,it.pre);
+it.pre.style.display='none';
+},function(){
+var scratch=document.getElementById(id);
+if(scratch)scratch.parentNode.removeChild(scratch);
+scratch=document.getElementById('d'+id);
+if(scratch)scratch.parentNode.removeChild(scratch);
+if(gen!==renderGen)return;
+if(it.mount.parentNode)it.mount.parentNode.removeChild(it.mount);
+it.pre.style.display='';
+});
+});
+}
+render();
+if(mq&&mq.addEventListener)mq.addEventListener('change',render);
+if(typeof MutationObserver!=='undefined')new MutationObserver(render).observe(root,{attributes:true,attributeFilter:['data-theme']});
+})();</script>
+<!--claude-mermaid-runtime-end-->
+</body>
+</html>
