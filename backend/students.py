@@ -583,15 +583,26 @@ def student_company_skill_gap(
 def student_drives(user: dict = Depends(require_role('student'))):
     master, _ = _student_records(user)
     drives = find_many('drives')
+    apps = find_many('applications', {'student_id': master['id']})
+    apps_by_drive = {app.get('drive_id'): app for app in apps}
+
     visible = []
     for drive in drives:
         if drive.get('status') not in {'open_for_optin','shortlist_published','admin_approved'}:
             continue
         ok, reason = is_eligible(master, drive)
+        app = apps_by_drive.get(drive['id'])
         visible.append({
             **{key: value for key, value in drive.items() if key != 'jd_pdf_file_id'},
             'eligible': ok,
             'eligibility_reason': reason,
+            'opted_in': app is not None,
+            'application_id': app.get('id') if app else None,
+            'application_status': app.get('status') if app else None,
+            'application_flags': app.get('flags') if app else None,
+            'fit_score': app.get('fit_score') if app else None,
+            'matched_skills': app.get('matched_skills') if app else None,
+            'missing_skills': app.get('missing_skills') if app else None,
         })
     return visible
 
@@ -602,10 +613,13 @@ async def upload_master_students(file: UploadFile = File(...), admin: dict = Dep
     rows = []
     
     try:
-        if file.filename.lower().endswith('.xlsx'):
+        filename = (file.filename or '').lower()
+        if filename.endswith('.xlsx'):
             # Load Excel workbook and parse rows
             wb = openpyxl.load_workbook(BytesIO(raw), data_only=True)
             sheet = wb.active
+            if sheet is None:
+                raise HTTPException(status_code=400, detail='Invalid Excel sheet.')
             # Normalize headers (lowercase, replace spaces with underscores)
             headers = [str(cell.value).strip().lower().replace(" ", "_") for cell in sheet[1]]
             for row in sheet.iter_rows(min_row=2, values_only=True):

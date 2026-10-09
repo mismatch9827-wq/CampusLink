@@ -10,15 +10,18 @@ from typing import Any
 
 from bson import ObjectId
 from bson.errors import InvalidId
+from dotenv import load_dotenv
 from gridfs import GridFSBucket
 from gridfs.errors import NoFile
 from pymongo import MongoClient
+
+load_dotenv()
 
 MONGO_URI = os.getenv('MONGO_URI', 'mongodb://localhost:27017')
 MONGO_DB = os.getenv('MONGO_DB', 'campuslink')
 
 try:
-    _client = MongoClient(MONGO_URI, serverSelectionTimeoutMS=450)
+    _client = MongoClient(MONGO_URI, serverSelectionTimeoutMS=3000)
     _client.admin.command('ping')
     _db = _client[MONGO_DB]
     _drive_jd_bucket = GridFSBucket(_db, bucket_name='drive_jds')

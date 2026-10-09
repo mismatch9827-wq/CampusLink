@@ -131,6 +131,12 @@ export interface Drive {
   }
   eligible?: boolean
   eligibility_reason?: string
+  opted_in?: boolean
+  application_id?: string
+  application_status?: ApplicationStatus
+  fit_score?: number
+  matched_skills?: string[]
+  missing_skills?: string[]
 }
 
 export interface Notification {

@@ -512,5 +512,28 @@ def opt_in(drive_id: str, user: dict = Depends(require_role('student'))):
     flags=run_verification(master,profile)
     app={'id':new_id('a'),'drive_id':drive_id,'student_id':master['id'],'status':'opted_in','flags':flags}
     insert_one('applications',app)
+
+    now_iso = datetime.now(timezone.utc).isoformat()
+    insert_one('notifications', {
+        'id': new_id('n'),
+        'student_id': master['id'],
+        'user_id': user['id'],
+        'drive_id': drive_id,
+        'type': 'optin_confirmed',
+        'title': f"Opt-in confirmed: {drive['company']}",
+        'message': f"You opted in for {drive['role']} at {drive['company']}. Your application is queued for Gate 2 verification.",
+        'read': False,
+        'created_at': now_iso,
+    })
+    insert_one('notifications', {
+        'id': new_id('n'),
+        'drive_id': drive_id,
+        'type': 'new_applicant',
+        'title': f"New applicant: {master.get('name', 'Student')}",
+        'message': f"{master.get('name', 'Student')} ({master.get('registration_number')}) opted in for {drive['company']} · {drive['role']}.",
+        'read': False,
+        'created_at': now_iso,
+    })
+
     log_action(user['id'], 'student_optin', app['id'], {'drive_id':drive_id})
     return {'message':'Opt-in successful','application':app}

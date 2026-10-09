@@ -3,8 +3,10 @@ from __future__ import annotations
 from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel
 
+from datetime import datetime, timezone
+
 from auth import require_role
-from db import find_many, find_one, update_one, log_action
+from db import find_many, find_one, update_one, log_action, insert_one, new_id
 
 router = APIRouter(tags=['verification'])
 
@@ -176,6 +178,32 @@ def verify_application(application_id: str, body: DecisionBody, admin: dict = De
             'missing_skills': scored.get('missing_skills', [])
         })
     updated=update_one('applications', {'id':application_id}, fields)
+    
+    drive = find_one('drives', {'id': app.get('drive_id')}) or {}
+    now_iso = datetime.now(timezone.utc).isoformat()
+    if body.approve:
+        insert_one('notifications', {
+            'id': new_id('n'),
+            'student_id': app.get('student_id'),
+            'drive_id': app.get('drive_id'),
+            'type': 'verification_approved',
+            'title': f"Gate 2 Approved: {drive.get('company', 'Drive')}",
+            'message': f"Your application for {drive.get('company')} has been verified by the placement cell! You are now ranked and visible to the recruiter.",
+            'read': False,
+            'created_at': now_iso,
+        })
+    else:
+        insert_one('notifications', {
+            'id': new_id('n'),
+            'student_id': app.get('student_id'),
+            'drive_id': app.get('drive_id'),
+            'type': 'verification_rejected',
+            'title': f"Gate 2 Rejected: {drive.get('company', 'Drive')}",
+            'message': f"Your application for {drive.get('company')} was rejected during Gate 2 verification.",
+            'read': False,
+            'created_at': now_iso,
+        })
+
     log_action(admin['id'], 'gate2_verify' if body.approve else 'gate2_reject', application_id, {'status':new_status})
     return updated
 
@@ -199,6 +227,30 @@ def batch_verify_applications(body: BatchVerifyBody, admin: dict = Depends(requi
                 'missing_skills': scored.get('missing_skills', [])
             })
         update_one('applications', {'id': app_id}, fields)
+        drive = find_one('drives', {'id': app.get('drive_id')}) or {}
+        now_iso = datetime.now(timezone.utc).isoformat()
+        if body.approve:
+            insert_one('notifications', {
+                'id': new_id('n'),
+                'student_id': app.get('student_id'),
+                'drive_id': app.get('drive_id'),
+                'type': 'verification_approved',
+                'title': f"Gate 2 Approved: {drive.get('company', 'Drive')}",
+                'message': f"Your application for {drive.get('company')} has been verified by the placement cell! You are now ranked and visible to the recruiter.",
+                'read': False,
+                'created_at': now_iso,
+            })
+        else:
+            insert_one('notifications', {
+                'id': new_id('n'),
+                'student_id': app.get('student_id'),
+                'drive_id': app.get('drive_id'),
+                'type': 'verification_rejected',
+                'title': f"Gate 2 Rejected: {drive.get('company', 'Drive')}",
+                'message': f"Your application for {drive.get('company')} was rejected during Gate 2 verification.",
+                'read': False,
+                'created_at': now_iso,
+            })
         log_action(admin['id'], 'gate2_verify' if body.approve else 'gate2_reject', app_id, {'status': new_status})
         processed.append(app_id)
     return {'message': f'{len(processed)} applications processed', 'processed': processed}

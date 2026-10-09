@@ -21,9 +21,10 @@ from db import count, delete_many, find_one, insert_one, update_one, new_id
 router = APIRouter(prefix='/auth', tags=['auth'])
 
 # Security Configuration
-SECRET_KEY = os.getenv('JWT_SECRET')
-if not SECRET_KEY:
+raw_secret = os.getenv('JWT_SECRET')
+if not raw_secret:
     raise RuntimeError('JWT_SECRET must be set in the environment')
+SECRET_KEY: str = raw_secret
 ALGORITHM = "HS256"
 ACCESS_TOKEN_EXPIRE_MINUTES = 600
 

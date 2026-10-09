@@ -1,0 +1,8 @@
+{
+  "venvPath": "backend",
+  "venv": "myenv",
+  "extraPaths": [
+    "backend",
+    "backend/myenv/Lib/site-packages"
+  ]
+}

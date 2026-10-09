@@ -22,7 +22,7 @@ def dashboard(admin: dict = Depends(require_role('admin'))):
     offers = find_many('offers')
     accepted = [o for o in offers if o.get('status') == 'accepted']
     salaries = [float(o.get('ctc', 0)) for o in offers if o.get('ctc')]
-    branches = sorted({m.get('branch') for m in masters if m.get('branch')})
+    branches: list[str] = sorted({str(m['branch']) for m in masters if m.get('branch')})
     
     branch_conversion = []
     for b in branches:
@@ -208,9 +208,12 @@ async def upload_historical_placements(file: UploadFile = File(...), admin: dict
     rows = []
     
     try:
-        if file.filename.lower().endswith('.xlsx'):
+        filename = (file.filename or '').lower()
+        if filename.endswith('.xlsx'):
             wb = openpyxl.load_workbook(BytesIO(raw), data_only=True)
             sheet = wb.active
+            if sheet is None:
+                raise HTTPException(status_code=400, detail='Invalid Excel sheet.')
             headers = [str(cell.value).strip().lower().replace(" ", "_") for cell in sheet[1]]
             for row in sheet.iter_rows(min_row=2, values_only=True):
                 if any(row):

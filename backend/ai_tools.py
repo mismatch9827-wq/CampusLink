@@ -150,8 +150,8 @@ def parse_resume(resume_text: str) -> dict:
             ("human", "Resume Text:\n{resume_text}")
         ])
         chain = prompt | structured_llm
-        result: ResumeExtraction = chain.invoke({"resume_text": resume_text})
-        return result.model_dump()
+        result: Any = chain.invoke({"resume_text": resume_text})
+        return result.model_dump() if hasattr(result, "model_dump") else dict(result)
 
     return _execute_with_key_rotation(
         "parse_resume",
@@ -271,8 +271,8 @@ def parse_jd(jd_text: str) -> dict:
             ("human", "Job Description Text:\n{jd_text}")
         ])
         chain = prompt | structured_llm
-        result: JDExtraction = chain.invoke({"jd_text": jd_text})
-        return result.model_dump()
+        result: Any = chain.invoke({"jd_text": jd_text})
+        return result.model_dump() if hasattr(result, "model_dump") else dict(result)
 
     return _execute_with_key_rotation(
         "parse_jd",
@@ -321,8 +321,8 @@ def parse_jd_schedule(jd_text: str) -> dict:
             ("human", "Job Description Text:\n{jd_text}"),
         ])
         chain = prompt | structured_llm
-        result: JDScheduleExtraction = chain.invoke({"jd_text": jd_text})
-        return result.model_dump()
+        result: Any = chain.invoke({"jd_text": jd_text})
+        return result.model_dump() if hasattr(result, "model_dump") else dict(result)
 
     return _execute_with_key_rotation(
         "parse_jd_schedule",
@@ -377,14 +377,15 @@ def generate_explanation(role: str, score: float, matched: list[str], missing: l
             ("human", "Role: {role}\nFit Score: {score}/100\nMatched Skills: {matched}\nMissing Skills: {missing}\nProjects: {projects}")
         ])
         chain = prompt | llm.with_structured_output(FitExplanation)
-        result = chain.invoke({
+        result: Any = chain.invoke({
             "role": role,
             "score": score,
             "matched": ", ".join(matched) or "None",
             "missing": ", ".join(missing) or "None",
             "projects": projects
         })
-        return result.model_dump()["reasons"]
+        dump = result.model_dump() if hasattr(result, "model_dump") else dict(result)
+        return dump.get("reasons", [])
 
     return _execute_with_key_rotation(
         "generate_explanation",
