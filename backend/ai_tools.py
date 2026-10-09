@@ -35,6 +35,12 @@ class JDExtraction(BaseModel):
     venue: str | None = Field(default=None, description="Explicit drive/interview venue or location")
 
 
+class JDScheduleExtraction(BaseModel):
+    drive_date: str | None = Field(default=None, description="Explicit drive/interview date as YYYY-MM-DD; null if absent or incomplete")
+    slot: str | None = Field(default=None, description="Explicit interview/drive time slot; null if absent")
+    venue: str | None = Field(default=None, description="Explicit drive/interview venue; null if absent")
+
+
 class FitExplanation(BaseModel):
     reasons: list[str] = Field(description="3 to 4 concise bullet points explaining why the candidate matches or what they lack.")
 
@@ -275,43 +281,75 @@ def parse_jd(jd_text: str) -> dict:
     )
 
 
+def _fallback_parse_jd_schedule(text: str) -> dict:
+    def labeled_value(label_pattern: str) -> str | None:
+        pattern = re.compile(rf'^\s*(?:{label_pattern})\s*(?:\||:|=|-|–|—)\s*(.*?)\s*$', re.IGNORECASE)
+        for line in text.splitlines():
+            match = pattern.match(line)
+            if match and match.group(1).strip():
+                return match.group(1).strip()
+        return None
+
+    date_value = labeled_value(r'drive\s+date|interview\s+date|date')
+    drive_date = None
+    if date_value:
+        for date_format in ('%d %B %Y', '%d %b %Y', '%B %d, %Y', '%b %d, %Y', '%Y-%m-%d', '%d-%m-%Y', '%d/%m/%Y'):
+            try:
+                drive_date = datetime.strptime(date_value, date_format).date().isoformat()
+                break
+            except ValueError:
+                continue
+
+    return {
+        'drive_date': drive_date,
+        'slot': labeled_value(r'time\s+slot|interview\s+slot|slot|timing'),
+        'venue': labeled_value(r'venue|location'),
+    }
+
+
+def parse_jd_schedule(jd_text: str) -> dict:
+    """Extract only explicitly stated date, time, and venue from a job description."""
+    def _run(key: str) -> dict:
+        llm = ChatGoogleGenerativeAI(
+            model=os.getenv("GEMINI_MODEL", "gemini-2.5-flash"),
+            temperature=0.1,
+            api_key=key,
+        )
+        structured_llm = llm.with_structured_output(JDScheduleExtraction)
+        prompt = ChatPromptTemplate.from_messages([
+            ("system", "Extract only an explicitly stated drive/interview date, time slot, and venue from this job description. Do not extract or infer company, role, skills, eligibility, salary, or any other fields. Never guess missing values. Return dates as YYYY-MM-DD only when the complete date including year is stated; otherwise return null."),
+            ("human", "Job Description Text:\n{jd_text}"),
+        ])
+        chain = prompt | structured_llm
+        result: JDScheduleExtraction = chain.invoke({"jd_text": jd_text})
+        return result.model_dump()
+
+    return _execute_with_key_rotation(
+        "parse_jd_schedule",
+        _run,
+        lambda: _fallback_parse_jd_schedule(jd_text),
+    )
+
+
 # ----------------- 4. Semantic Matching (Engine 5) -----------------
 
 def get_semantic_similarity(student_skills: list[str], required_skills: list[str]) -> float:
-    """Calculates semantic match between student skills and job requirements (0.0 to 1.0) with multi-key failover."""
+    """Calculates match ratio between student skills and job requirements (0.0 to 1.0) using smart token and alias normalization."""
     if not student_skills or not required_skills:
         return 0.0
 
-    def _fallback_similarity() -> float:
+    try:
+        from students import match_required_skill
+        matched_count = 0
+        for req in required_skills:
+            matched, _ = match_required_skill(req, student_skills)
+            if matched:
+                matched_count += 1
+        return round(matched_count / max(1, len(required_skills)), 2)
+    except Exception:
         s_set = {s.lower() for s in student_skills}
         r_set = {s.lower() for s in required_skills}
-        return len(s_set & r_set) / max(1, len(r_set))
-
-    def _run(key: str) -> float:
-        embed_model = GoogleGenerativeAIEmbeddings(
-            model="models/embedding-001",
-            google_api_key=key
-        )
-        student_text = ", ".join(student_skills)
-        req_text = ", ".join(required_skills)
-
-        vec1 = embed_model.embed_query(student_text)
-        vec2 = embed_model.embed_query(req_text)
-
-        dot_product = sum(a * b for a, b in zip(vec1, vec2))
-        mag1 = math.sqrt(sum(a * a for a in vec1))
-        mag2 = math.sqrt(sum(b * b for b in vec2))
-
-        if mag1 == 0 or mag2 == 0:
-            return 0.0
-
-        return dot_product / (mag1 * mag2)
-
-    return _execute_with_key_rotation(
-        "get_semantic_similarity",
-        _run,
-        _fallback_similarity
-    )
+        return round(len(s_set & r_set) / max(1, len(r_set)), 2)
 
 
 # ----------------- 5. Explanation Generation (Engine 6) -----------------

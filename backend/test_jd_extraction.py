@@ -1,10 +1,18 @@
 from __future__ import annotations
 
+from io import BytesIO
 import unittest
 from unittest.mock import patch
 
-from ai_tools import _fallback_parse_jd
-from drives import DriveCreate, create_drive, extract_jd_pdf
+from bson import ObjectId
+from fastapi import FastAPI
+from fastapi.testclient import TestClient
+
+from ai_tools import _fallback_parse_jd, _fallback_parse_jd_schedule
+from auth import get_current_user
+from db import store_drive_jd_file
+import drives
+from drives import DriveCreate, _schedule_conflicts, create_drive, extract_jd_pdf
 
 
 class FakePage:
@@ -136,6 +144,227 @@ class JobDescriptionExtractionTests(unittest.TestCase):
         self.assertEqual(saved['min_cgpa'], 8.0)
         self.assertEqual(saved['branches'], ['ECE'])
         self.assertEqual(saved['max_backlogs'], 1)
+
+
+class DriveScheduleConflictTests(unittest.TestCase):
+    def setUp(self) -> None:
+        self.other_drive = {
+            'id': 'other-drive',
+            'recruiter_id': 'other-recruiter',
+            'status': 'open_for_optin',
+            'company': 'Example Company',
+            'role': 'Software Engineer',
+            'date': '2026-11-18',
+            'slot': '9:30 AM to 12:00 PM',
+            'venue': 'Main Auditorium',
+        }
+        self.current_drive = {'id': 'current-drive', 'recruiter_id': 'current-recruiter'}
+
+    def test_overlapping_time_at_same_venue_is_reported(self) -> None:
+        with patch('drives.find_many', return_value=[self.other_drive]):
+            conflicts = _schedule_conflicts(self.current_drive, {
+                'date': '2026-11-18',
+                'slot': '11:00 AM to 1:00 PM',
+                'venue': 'Main Auditorium',
+            })
+
+        self.assertEqual(len(conflicts), 1)
+        self.assertIn('Example Company', conflicts[0])
+
+    def test_back_to_back_time_at_same_venue_is_allowed(self) -> None:
+        with patch('drives.find_many', return_value=[self.other_drive]):
+            conflicts = _schedule_conflicts(self.current_drive, {
+                'date': '2026-11-18',
+                'slot': '12:00 PM to 1:00 PM',
+                'venue': 'Main Auditorium',
+            })
+
+        self.assertEqual(conflicts, [])
+
+
+class OriginalJdPdfTests(unittest.TestCase):
+    def test_json_drive_submission_uses_recruiter_route(self) -> None:
+        app = FastAPI()
+        app.include_router(drives.router)
+        app.dependency_overrides[get_current_user] = lambda: {'id': 'recruiter-1', 'role': 'recruiter'}
+        with patch('drives.insert_one') as insert:
+            response = TestClient(app).post('/drives', json={
+                'company': 'Example Corp',
+                'role': 'Engineer',
+                'jd': 'Build software',
+                'required_skills': ['Python'],
+                'min_cgpa': 7,
+                'branches': ['CSE'],
+                'max_backlogs': 0,
+                'ctc': 8,
+                'date': '',
+                'slot': '',
+                'venue': '',
+            })
+
+        self.assertEqual(response.status_code, 200, response.text)
+        self.assertEqual(response.json()['recruiter_id'], 'recruiter-1')
+        insert.assert_called_once()
+
+    def test_schedule_parser_returns_only_date_time_and_venue(self) -> None:
+        result = _fallback_parse_jd_schedule(
+            'Company | Example Corp\n'
+            'Drive date | 18 November 2026\n'
+            'Time slot | 9:30 AM - 5:00 PM\n'
+            'Venue | Main Hall\n'
+            'Minimum CGPA | 7.5\n'
+            'Required skills | Python'
+        )
+
+        self.assertEqual(result, {
+            'drive_date': '2026-11-18',
+            'slot': '9:30 AM - 5:00 PM',
+            'venue': 'Main Hall',
+        })
+
+    def test_gridfs_store_uses_stream_and_returns_file_id(self) -> None:
+        file_id = ObjectId()
+        with patch('db._drive_jd_bucket.upload_from_stream', return_value=file_id) as upload:
+            result = store_drive_jd_file(b'%PDF-test', 'jd.pdf', {'content_type': 'application/pdf'})
+
+        self.assertEqual(result, str(file_id))
+        self.assertEqual(upload.call_args.args[0], 'jd.pdf')
+        self.assertEqual(upload.call_args.args[1].read(), b'%PDF-test')
+
+    def test_multipart_drive_submission_stores_the_original_pdf(self) -> None:
+        app = FastAPI()
+        app.include_router(drives.router)
+        app.dependency_overrides[get_current_user] = lambda: {'id': 'recruiter-1', 'role': 'recruiter'}
+        client = TestClient(app)
+        fields = {
+            'company': 'Example Corp',
+            'role': 'Engineer',
+            'jd': '',
+            'required_skills': 'Python',
+            'min_cgpa': '7',
+            'branches': 'CSE',
+            'max_backlogs': '0',
+            'ctc': '8',
+            'date': '',
+            'slot': '',
+            'venue': '',
+        }
+        with (
+            patch('drives.store_drive_jd_file', return_value='gridfs-file-id') as store,
+            patch('drives.insert_one', side_effect=lambda collection, document: document),
+        ):
+            response = client.post(
+                '/drives/with-pdf',
+                data=fields,
+                files={'file': ('job-description.pdf', b'%PDF-test', 'application/pdf')},
+            )
+
+        self.assertEqual(response.status_code, 200, response.text)
+        self.assertEqual(response.json()['jd_source'], 'pdf')
+        self.assertEqual(response.json()['jd_pdf_file_id'], 'gridfs-file-id')
+        self.assertEqual(response.json()['jd'], '')
+        store.assert_called_once_with(b'%PDF-test', 'job-description.pdf', {
+            'content_type': 'application/pdf',
+            'uploaded_by': 'recruiter-1',
+        })
+
+    def test_recruiter_cannot_fetch_admin_job_description_pdf(self) -> None:
+        app = FastAPI()
+        app.include_router(drives.router)
+        app.dependency_overrides[get_current_user] = lambda: {'id': 'recruiter-1', 'role': 'recruiter'}
+
+        response = TestClient(app).get('/admin/drives/drive-1/jd-pdf')
+
+        self.assertEqual(response.status_code, 403)
+
+    def test_pdf_parse_response_extracts_jd_requirements_and_schedule(self) -> None:
+        app = FastAPI()
+        app.include_router(drives.router)
+        app.dependency_overrides[get_current_user] = lambda: {'id': 'recruiter-1', 'role': 'recruiter'}
+        with (
+            patch('drives.extract_jd_pdf', return_value=('Company | Example Corp', [], False)),
+            patch('drives.parse_jd', return_value={
+                'company': 'Example Corp',
+                'role': 'Engineer',
+                'required_skills': ['Python'],
+                'branches': ['CSE'],
+                'min_cgpa': 7.0,
+                'max_backlogs': 0,
+                'ctc': 10.0,
+                'drive_date': '2026-11-18',
+                'slot': '9:30 AM to 5 PM',
+                'venue': 'Main Hall',
+            }),
+        ):
+            response = TestClient(app).post(
+                '/drives/parse-pdf',
+                files={'file': ('job-description.pdf', b'%PDF-test', 'application/pdf')},
+            )
+
+        self.assertEqual(response.status_code, 200, response.text)
+        self.assertEqual(response.json()['extracted_data']['company'], 'Example Corp')
+        self.assertEqual(response.json()['extracted_data']['drive_date'], '2026-11-18')
+        self.assertIn('raw_text', response.json())
+
+    def test_admin_receives_uploaded_pdf_inline(self) -> None:
+        app = FastAPI()
+        app.include_router(drives.router)
+        app.dependency_overrides[get_current_user] = lambda: {'id': 'admin-1', 'role': 'admin'}
+        drive = {'id': 'drive-1', 'jd_pdf_file_id': str(ObjectId()), 'jd_pdf_filename': 'original jd.pdf'}
+        with (
+            patch('drives.find_one', return_value=drive),
+            patch('drives.open_drive_jd_file', return_value=BytesIO(b'%PDF-test')),
+        ):
+            response = TestClient(app).get('/admin/drives/drive-1/jd-pdf')
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.headers['content-type'], 'application/pdf')
+        self.assertIn("inline; filename*=UTF-8''original%20jd.pdf", response.headers['content-disposition'])
+        self.assertEqual(response.content, b'%PDF-test')
+
+    def test_multipart_drive_submission_with_minimal_fields_stores_drive(self) -> None:
+        app = FastAPI()
+        app.include_router(drives.router)
+        app.dependency_overrides[get_current_user] = lambda: {'id': 'recruiter-1', 'role': 'recruiter', 'name': 'Acme Corp'}
+        client = TestClient(app)
+        with (
+            patch('drives.store_drive_jd_file', return_value='gridfs-file-id'),
+            patch('drives.insert_one', side_effect=lambda collection, document: document),
+        ):
+            response = client.post(
+                '/drives/with-pdf',
+                data={'date': '2026-11-20', 'slot': '10 AM - 4 PM', 'venue': 'Auditorium'},
+                files={'file': ('job.pdf', b'%PDF-test', 'application/pdf')},
+            )
+
+        self.assertEqual(response.status_code, 200, response.text)
+        res_data = response.json()
+        self.assertEqual(res_data['company'], 'Acme Corp')
+        self.assertEqual(res_data['date'], '2026-11-20')
+        self.assertEqual(res_data['slot'], '10 AM - 4 PM')
+        self.assertEqual(res_data['venue'], 'Auditorium')
+        self.assertEqual(res_data['jd_source'], 'pdf')
+
+    def test_admin_can_update_drive_details(self) -> None:
+        app = FastAPI()
+        app.include_router(drives.router)
+        app.dependency_overrides[get_current_user] = lambda: {'id': 'admin-1', 'role': 'admin'}
+        client = TestClient(app)
+        existing_drive = {'id': 'drive-99', 'company': 'Acme Corp', 'role': 'Job Opening (From JD)', 'status': 'pending_admin_review'}
+        with (
+            patch('drives.find_one', return_value=existing_drive),
+            patch('drives.update_one', return_value={**existing_drive, 'role': 'Senior SDE', 'min_cgpa': 7.5, 'ctc': 12.0}),
+            patch('drives.log_action'),
+        ):
+            response = client.patch(
+                '/admin/drives/drive-99',
+                json={'role': 'Senior SDE', 'min_cgpa': 7.5, 'ctc': 12.0},
+            )
+
+        self.assertEqual(response.status_code, 200, response.text)
+        self.assertEqual(response.json()['role'], 'Senior SDE')
+        self.assertEqual(response.json()['min_cgpa'], 7.5)
+        self.assertEqual(response.json()['ctc'], 12.0)
 
 
 if __name__ == '__main__':

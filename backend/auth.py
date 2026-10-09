@@ -139,6 +139,15 @@ def register(body: RegisterBody):
             user['email'] = master['email'].strip().lower()
         insert_one('users', user)
         update_one('master_students', {'id': master['id']}, {'user_id': user['id']})
+        if not find_one('students', {'student_id': master['id']}):
+            insert_one('students', {
+                'student_id': master['id'],
+                'parsed_skills': [],
+                'projects': [],
+                'certificates': [],
+                'resume_text': '',
+                'certificate_proofs': [],
+            })
         return _auth_response(user)
 
     email = ident.lower()
@@ -168,6 +177,15 @@ def register(body: RegisterBody):
     }
     try:
         insert_one('users', user)
+        if body.role == 'recruiter':
+            insert_one('recruiters', {
+                'id': user['id'],
+                'user_id': user['id'],
+                'name': name,
+                'email': email,
+                'company': name,
+                'created_at': datetime.now(timezone.utc).isoformat(),
+            })
     except Exception:
         if body.role == 'admin':
             delete_many('system_flags', {'_id': 'admin_bootstrap'})

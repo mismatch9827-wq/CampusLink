@@ -69,12 +69,17 @@ def ranked(drive_id: str, recruiter: dict = Depends(require_role('recruiter'))):
         # ONLY call the AI if this application hasn't been scored yet
         if app.get('fit_score') is None:
             scored = score_application(app)
-            update_one('applications', {'id': app['id']}, {'fit_score': scored['fit_score'], 'reasons': scored['reasons']})
+            update_one('applications', {'id': app['id']}, {
+                'fit_score': scored['fit_score'],
+                'reasons': scored['reasons'],
+                'matched_skills': scored.get('matched_skills', []),
+                'missing_skills': scored.get('missing_skills', [])
+            })
             # Attach the new scores to the current object so they render immediately
             app['fit_score'] = scored['fit_score']
             app['reasons'] = scored['reasons']
-            app['matched_skills'] = scored['matched_skills']
-            app['missing_skills'] = scored['missing_skills']
+            app['matched_skills'] = scored.get('matched_skills', [])
+            app['missing_skills'] = scored.get('missing_skills', [])
 
         master = find_one('master_students', {'id': app['student_id']}) or {}
         profile = find_one('students', {'student_id': app['student_id']}) or {}
