@@ -197,6 +197,9 @@ def get_master_students(admin: dict = Depends(require_role('admin'))):
             'backlogs': m.get('backlogs', 0),
             'passing_year': m.get('passing_year'),
             'email': m.get('email', ''),
+            'aptitude': m.get('aptitude'),
+            'communication': m.get('communication'),
+            'mock_interview': m.get('mock_interview'),
             'has_profile': has_profile
         })
     return result

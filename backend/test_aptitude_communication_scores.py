@@ -122,8 +122,37 @@ class AptitudeAndCommunicationScoresTests(unittest.TestCase):
             readiness_data = student_readiness(user=user)
 
         self.assertEqual(readiness_data["unassessed_categories"], [])
+        self.assertEqual(readiness_data["unassessed_categories"], [])
         # Both scores >= 65, so no low score recommendation
         self.assertFalse(any("Aptitude" in r for r in readiness_data["recommendations"]))
+
+    def test_upload_master_students_with_communication_skill_and_10_scale(self) -> None:
+        import asyncio
+        from fastapi import UploadFile
+        from students import upload_master_students
+
+        csv_data = (
+            "registration_number,name,branch,cgpa,backlogs,passing_year,email,aptitude,communication_skill\n"
+            "2401116031,Karan Mahapatra,ECE,6.9,2,2028,karan.mahapatra31@gmail.com,6.0,6.7\n"
+        ).encode("utf-8")
+
+        mock_upload_file = MagicMock(spec=UploadFile)
+        mock_upload_file.filename = "students.csv"
+        async def fake_read():
+            return csv_data
+        mock_upload_file.read = fake_read
+
+        captured_records = []
+        with patch("students.find_one", return_value=None), \
+             patch("students.insert_one", side_effect=lambda col, doc: captured_records.append(doc)), \
+             patch("students.new_id", return_value="s_mock"):
+            resp = asyncio.run(upload_master_students(file=mock_upload_file, admin={"role": "admin"}))
+
+        self.assertEqual(resp["created"], 1)
+        self.assertEqual(len(captured_records), 1)
+        rec = captured_records[0]
+        self.assertEqual(rec["aptitude"], 60.0)
+        self.assertEqual(rec["communication"], 67.0)
 
 
 if __name__ == "__main__":

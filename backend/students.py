@@ -736,6 +736,9 @@ async def upload_master_students(file: UploadFile = File(...), admin: dict = Dep
             raise HTTPException(status_code=400, detail=f'Invalid {field} on row {row_number}') from exc
         if not 0 <= score <= 100:
             raise HTTPException(status_code=400, detail=f'{field} must be between 0 and 100 on row {row_number}')
+        # If score is entered on a 10-point scale (e.g., 6.7, 7.5, 9.5), scale it to 100-point percentage
+        if 0 < score <= 10.0:
+            score = round(score * 10.0, 2)
         return score
 
     created = updated = 0
@@ -760,6 +763,15 @@ async def upload_master_students(file: UploadFile = File(...), admin: dict = Dep
             raise HTTPException(status_code=400, detail=f'Academic values are out of range on row {row_number}')
 
         clean_reg = str(reg_no).strip().upper()
+        apt_val = row.get('aptitude') or row.get('aptitude_score') or row.get('aptitude_skill')
+        comm_val = (
+            row.get('communication')
+            or row.get('communication_skill')
+            or row.get('communication_skills')
+            or row.get('communication_score')
+        )
+        mock_val = row.get('mock_interview') or row.get('mock_interview_score') or row.get('mock')
+
         record = {
             'registration_number': clean_reg,
             'name': name,
@@ -767,9 +779,9 @@ async def upload_master_students(file: UploadFile = File(...), admin: dict = Dep
             'cgpa': cgpa,
             'passing_year': passing_year,
             'backlogs': backlogs,
-            'aptitude': _parse_opt_float(row.get('aptitude'), 'aptitude', row_number),
-            'mock_interview': _parse_opt_float(row.get('mock_interview'), 'mock_interview', row_number),
-            'communication': _parse_opt_float(row.get('communication'), 'communication', row_number),
+            'aptitude': _parse_opt_float(apt_val, 'aptitude', row_number),
+            'mock_interview': _parse_opt_float(mock_val, 'mock_interview', row_number),
+            'communication': _parse_opt_float(comm_val, 'communication', row_number),
         }
         if row.get('email'):
             record['email'] = str(row['email']).strip().lower()

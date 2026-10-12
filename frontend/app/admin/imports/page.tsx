@@ -414,6 +414,8 @@ export default function MasterDataImportsPage() {
                       <th className="px-4 py-3">Official CGPA</th>
                       <th className="px-4 py-3">Backlogs</th>
                       <th className="px-4 py-3">Passing Year</th>
+                      <th className="px-4 py-3">Aptitude</th>
+                      <th className="px-4 py-3">Communication</th>
                       <th className="px-4 py-3">Profile Status</th>
                     </tr>
                   </thead>
@@ -441,6 +443,24 @@ export default function MasterDataImportsPage() {
                         </td>
                         <td className="px-4 py-3 text-slate-600">{s.passing_year}</td>
                         <td className="px-4 py-3">
+                          {s.aptitude !== null && s.aptitude !== undefined ? (
+                            <span className="inline-flex items-center rounded bg-blue-50 border border-blue-200 px-2 py-0.5 text-xs font-bold text-blue-800">
+                              {s.aptitude}%
+                            </span>
+                          ) : (
+                            <span className="text-slate-400 italic text-[11px]">Unassessed</span>
+                          )}
+                        </td>
+                        <td className="px-4 py-3">
+                          {s.communication !== null && s.communication !== undefined ? (
+                            <span className="inline-flex items-center rounded bg-purple-50 border border-purple-200 px-2 py-0.5 text-xs font-bold text-purple-800">
+                              {s.communication}%
+                            </span>
+                          ) : (
+                            <span className="text-slate-400 italic text-[11px]">Unassessed</span>
+                          )}
+                        </td>
+                        <td className="px-4 py-3">
                           {s.has_profile ? (
                             <span className="inline-flex items-center gap-1 rounded-md bg-emerald-50 border border-emerald-200 px-2 py-0.5 text-[10px] font-bold text-emerald-700">
                               <CheckCircle2 size={11} /> Profile Active
@@ -455,7 +475,7 @@ export default function MasterDataImportsPage() {
                     ))}
                     {filteredMasterStudents.length === 0 && (
                       <tr>
-                        <td colSpan={7} className="px-4 py-8 text-center text-slate-400">
+                        <td colSpan={9} className="px-4 py-8 text-center text-slate-400">
                           No student records found matching this search.
                         </td>
                       </tr>
