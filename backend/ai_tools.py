@@ -8,6 +8,9 @@ from dotenv import load_dotenv
 
 load_dotenv()
 
+from collections import OrderedDict
+import threading
+import numpy as np
 from langchain_google_genai import ChatGoogleGenerativeAI, GoogleGenerativeAIEmbeddings
 from langchain_core.prompts import ChatPromptTemplate
 from pydantic import BaseModel, Field
@@ -77,11 +80,20 @@ def gemini_is_configured() -> bool:
     return bool(_get_api_keys())
 
 
-def _execute_with_key_rotation(task_name: str, fn: Callable[[str], Any], fallback_fn: Callable[[], Any]) -> Any:
-    """Executes a Gemini operation with automatic failover to the next key if quota or rate limit is hit."""
+def _execute_with_key_rotation_with_status(
+    task_name: str,
+    fn: Callable[[str], Any],
+    fallback_fn: Callable[[], Any]
+) -> tuple[Any, str, bool, str | None]:
+    """
+    Executes a Gemini operation with failover and returns:
+    (result, provider_name, fallback_used, fallback_reason)
+    Never exposes or returns API key strings.
+    """
     keys = _get_api_keys()
     if not keys:
-        return fallback_fn()
+        res = fallback_fn()
+        return res, "rule_based_fallback", True, "Gemini API keys are not configured"
 
     global _current_key_idx
     total_keys = len(keys)
@@ -90,54 +102,206 @@ def _execute_with_key_rotation(task_name: str, fn: Callable[[str], Any], fallbac
     for attempt in range(total_keys):
         idx = (start_idx + attempt) % total_keys
         key = keys[idx]
-        masked = f"{key[:6]}...{key[-4:]}" if len(key) > 10 else "***"
         try:
             result = fn(key)
             _current_key_idx = idx
-            return result
+            return result, "gemini", False, None
         except Exception as e:
             err_msg = str(e)
-            print(f"[Gemini Key Pool] Key #{idx + 1} ({masked}) failed on {task_name}: {err_msg}")
+            print(f"[Gemini Key Pool] Key #{idx + 1} failed on {task_name}: {err_msg}")
             if attempt < total_keys - 1:
                 next_idx = (idx + 1) % total_keys
-                next_masked = f"{keys[next_idx][:6]}...{keys[next_idx][-4:]}" if len(keys[next_idx]) > 10 else "***"
-                print(f"[Gemini Key Pool] -> Auto-switching to Key #{next_idx + 1} ({next_masked})")
+                print(f"[Gemini Key Pool] -> Auto-switching to Key #{next_idx + 1}")
                 continue
             else:
                 print(f"[Gemini Key Pool] All {total_keys} keys exhausted for {task_name}. Using rule-based fallback.")
 
-    return fallback_fn()
+    res = fallback_fn()
+    return res, "rule_based_fallback", True, "Gemini provider calls failed across all keys; switched to rule-based fallback"
+
+
+def _execute_with_key_rotation(task_name: str, fn: Callable[[str], Any], fallback_fn: Callable[[], Any]) -> Any:
+    """Executes a Gemini operation with automatic failover to the next key if quota or rate limit is hit."""
+    res, _, _, _ = _execute_with_key_rotation_with_status(task_name, fn, fallback_fn)
+    return res
 
 
 # ----------------- 2. Resume Parsing (Engine 1) -----------------
 
-def _fallback_parse_resume(text: str) -> dict:
-    common_skills = [
-        "python", "javascript", "typescript", "react", "node.js", "next.js",
-        "sql", "mongodb", "fastapi", "docker", "aws", "git", "java", "c++",
-        "html", "css", "machine learning", "data science", "tailwind", "express"
+def _extract_projects_fallback(text: str) -> list[str]:
+    """Conservative, explainable project extraction from resume text without hallucination."""
+    projects: list[str] = []
+    lines = text.splitlines()
+    in_project_section = False
+
+    header_pattern = re.compile(r'^\s*(?:academic\s+|personal\s+|key\s+|selected\s+)?projects?\b', re.IGNORECASE)
+    next_section_pattern = re.compile(
+        r'^\s*(?:education|experience|work\s+experience|employment|certifications?|certificates?|skills?|technical\s+skills?|achievements?|awards?|publications?|contact|summary|profile)\b',
+        re.IGNORECASE
+    )
+    labeled_pattern = re.compile(r'^\s*(?:project(?:\s+name)?|title)\s*[:\-–—]\s*(.+)$', re.IGNORECASE)
+
+    for line in lines:
+        stripped = line.strip()
+        if not stripped:
+            continue
+
+        labeled_match = labeled_pattern.match(stripped)
+        if labeled_match:
+            cand = labeled_match.group(1).strip()
+            cand = re.split(r'\(http|\bhttps?://', cand)[0].strip(' -:|')
+            if cand and len(cand) <= 80 and cand not in projects:
+                projects.append(cand)
+            continue
+
+        if header_pattern.match(stripped) and len(stripped) < 40:
+            in_project_section = True
+            continue
+
+        if in_project_section:
+            if next_section_pattern.match(stripped) and len(stripped) < 40:
+                in_project_section = False
+                continue
+
+            bullet_match = re.match(r'^(?:[•\-\*▪►\d+\.]|\(\d+\))\s*(.+)$', stripped)
+            item_text = bullet_match.group(1).strip() if bullet_match else stripped
+            title_part = re.split(r'\s*(?:[-–—|:]|\busing\b|\bbuilt\s+with\b|\bwith\b|\(http|\bhttps?://)\s*', item_text, flags=re.IGNORECASE)[0].strip()
+
+            words = title_part.split()
+            first_word_lower = words[0].lower() if words else ""
+            action_verbs = {
+                "developed", "created", "built", "designed", "implemented",
+                "worked", "managed", "led", "participated", "engineered",
+                "utilized", "contributed", "assisted"
+            }
+
+            if (
+                title_part
+                and len(title_part) <= 70
+                and len(words) <= 7
+                and first_word_lower not in action_verbs
+                and title_part not in projects
+            ):
+                projects.append(title_part)
+                if len(projects) >= 6:
+                    break
+
+    if not projects:
+        gh_matches = re.findall(r'github\.com/[A-Za-z0-9_.-]+/([A-Za-z0-9_.-]+)', text)
+        for repo in gh_matches:
+            repo_clean = repo.strip().rstrip('.git')
+            if repo_clean and repo_clean.lower() not in {"profile", "readme", "portfolio"} and repo_clean not in projects:
+                projects.append(repo_clean)
+                if len(projects) >= 4:
+                    break
+
+    return projects[:6]
+
+
+def _extract_certificates_fallback(text: str) -> list[str]:
+    """Conservative, explainable certificate extraction from resume text without hallucination."""
+    certs: list[str] = []
+    lines = text.splitlines()
+    in_cert_section = False
+
+    header_pattern = re.compile(r'^\s*(?:certifications?|certificates?|licenses?\s*&\s*certifications?|courses?\s*&\s*certifications?)\b', re.IGNORECASE)
+    next_section_pattern = re.compile(
+        r'^\s*(?:education|experience|work\s+experience|projects?|skills?|technical\s+skills?|achievements?|awards?|contact|summary|profile)\b',
+        re.IGNORECASE
+    )
+    labeled_pattern = re.compile(r'^\s*(?:certificate|certification)\s*[:\-–—]\s*(.+)$', re.IGNORECASE)
+
+    cert_keywords = [
+        "certified", "certificate", "certification", "specialization", "course",
+        "aws", "azure", "gcp", "cisco", "red hat", "oracle", "udemy", "coursera",
+        "nptel", "hackerrank", "freecodecamp"
     ]
+
+    for line in lines:
+        stripped = line.strip()
+        if not stripped:
+            continue
+
+        labeled_match = labeled_pattern.match(stripped)
+        if labeled_match:
+            cand = labeled_match.group(1).strip()
+            cand = re.split(r'\(http|\bhttps?://', cand)[0].strip(' -:|')
+            if cand and len(cand) <= 90 and cand not in certs:
+                certs.append(cand)
+            continue
+
+        if header_pattern.match(stripped) and len(stripped) < 40:
+            in_cert_section = True
+            continue
+
+        if in_cert_section:
+            if next_section_pattern.match(stripped) and len(stripped) < 40:
+                in_cert_section = False
+                continue
+
+            bullet_match = re.match(r'^(?:[•\-\*▪►\d+\.]|\(\d+\))\s*(.+)$', stripped)
+            item_text = bullet_match.group(1).strip() if bullet_match else stripped
+            cand = re.split(r'\(http|\bhttps?://', item_text)[0].strip(' -:|')
+
+            if cand and len(cand) <= 90 and len(cand.split()) <= 10 and cand not in certs:
+                lower_cand = cand.lower()
+                if any(k in lower_cand for k in cert_keywords) or bullet_match:
+                    certs.append(cand)
+                    if len(certs) >= 6:
+                        break
+
+    return certs[:6]
+
+
+def _fallback_parse_resume(text: str) -> dict:
+    canonical_skills = {
+        "python": "Python", "javascript": "JavaScript", "typescript": "TypeScript",
+        "react": "React", "node.js": "Node.js", "next.js": "Next.js", "sql": "SQL",
+        "mongodb": "MongoDB", "fastapi": "FastAPI", "docker": "Docker", "aws": "AWS",
+        "git": "Git", "java": "Java", "c++": "C++", "c#": "C#", "html": "HTML",
+        "css": "CSS", "machine learning": "Machine Learning", "data science": "Data Science",
+        "tailwind": "Tailwind", "express": "Express", "kubernetes": "Kubernetes",
+        "flutter": "Flutter", "vue": "Vue", "angular": "Angular", "django": "Django",
+        "flask": "Flask", "spring boot": "Spring Boot", "postgresql": "PostgreSQL",
+        "mysql": "MySQL", "redis": "Redis", "graphql": "GraphQL", "linux": "Linux",
+        "go": "Go", "rust": "Rust", "kotlin": "Kotlin", "pytorch": "PyTorch",
+        "tensorflow": "TensorFlow", "pandas": "Pandas", "numpy": "NumPy",
+        "rest api": "REST API", "ci/cd": "CI/CD"
+    }
+
     lower = text.lower()
-    skills = [s.title() for s in common_skills if re.search(r'\b' + re.escape(s) + r'\b', lower)]
+    skills: list[str] = []
+    for skill_kw, canonical in canonical_skills.items():
+        if re.search(r'\b' + re.escape(skill_kw) + r'\b', lower):
+            if canonical not in skills:
+                skills.append(canonical)
 
     cgpa = None
-    cgpa_match = re.search(r'\b(?:cgpa|gpa)\s*[:=|\-–—]?\s*([0-9]+(?:\.[0-9]+)?)\b', lower)
+    cgpa_match = re.search(r'\b(?:cgpa|gpa)\s*[:=|\-–—]?\s*([0-9]+(?:\.[0-9]+)?)(?:\s*(?:/|out of)\s*10(?:\.0)?)?\b', lower)
     if cgpa_match:
         try:
-            cgpa = float(cgpa_match.group(1))
+            val = float(cgpa_match.group(1))
+            if 0.0 <= val <= 10.0:
+                cgpa = val
         except ValueError:
             pass
 
+    projects = _extract_projects_fallback(text)
+    certificates = _extract_certificates_fallback(text)
+
     return {
         "skills": skills,
-        "projects": [],
-        "certificates": [],
-        "cgpa": cgpa
+        "projects": projects,
+        "certificates": certificates,
+        "cgpa": cgpa,
+        "parsing_provider": "rule_based_fallback",
+        "fallback_used": True,
+        "fallback_reason": "Rule-based fallback parser invoked directly",
     }
 
 
 def parse_resume(resume_text: str) -> dict:
-    """Extracts structured skills, projects, certificates, and CGPA from resume text with multi-key failover."""
+    """Extracts structured skills, projects, certificates, and CGPA from resume text with multi-key failover and provider metadata."""
     def _run(key: str) -> dict:
         llm = ChatGoogleGenerativeAI(
             model=os.getenv("GEMINI_MODEL", "gemini-2.5-flash"),
@@ -153,11 +317,16 @@ def parse_resume(resume_text: str) -> dict:
         result: Any = chain.invoke({"resume_text": resume_text})
         return result.model_dump() if hasattr(result, "model_dump") else dict(result)
 
-    return _execute_with_key_rotation(
+    result, provider, fallback_used, fallback_reason = _execute_with_key_rotation_with_status(
         "parse_resume",
         _run,
         lambda: _fallback_parse_resume(resume_text)
     )
+    if isinstance(result, dict):
+        result["parsing_provider"] = provider
+        result["fallback_used"] = fallback_used
+        result["fallback_reason"] = fallback_reason
+    return result
 
 
 # Backwards compatibility alias
@@ -254,11 +423,14 @@ def _fallback_parse_jd(text: str) -> dict:
         "drive_date": drive_date,
         "slot": slot,
         "venue": venue,
+        "parsing_provider": "rule_based_fallback",
+        "fallback_used": True,
+        "fallback_reason": "Rule-based fallback parser invoked directly",
     }
 
 
 def parse_jd(jd_text: str) -> dict:
-    """Extracts job role, required skills, eligible branches, min CGPA, and max backlogs from JD with multi-key failover."""
+    """Extracts job role, required skills, eligible branches, min CGPA, and max backlogs from JD with multi-key failover and provider metadata."""
     def _run(key: str) -> dict:
         llm = ChatGoogleGenerativeAI(
             model=os.getenv("GEMINI_MODEL", "gemini-2.5-flash"),
@@ -274,11 +446,16 @@ def parse_jd(jd_text: str) -> dict:
         result: Any = chain.invoke({"jd_text": jd_text})
         return result.model_dump() if hasattr(result, "model_dump") else dict(result)
 
-    return _execute_with_key_rotation(
+    result, provider, fallback_used, fallback_reason = _execute_with_key_rotation_with_status(
         "parse_jd",
         _run,
         lambda: _fallback_parse_jd(jd_text)
     )
+    if isinstance(result, dict):
+        result["parsing_provider"] = provider
+        result["fallback_used"] = fallback_used
+        result["fallback_reason"] = fallback_reason
+    return result
 
 
 def _fallback_parse_jd_schedule(text: str) -> dict:
@@ -308,7 +485,7 @@ def _fallback_parse_jd_schedule(text: str) -> dict:
 
 
 def parse_jd_schedule(jd_text: str) -> dict:
-    """Extract only explicitly stated date, time, and venue from a job description."""
+    """Extract only explicitly stated date, time, and venue from a job description with multi-key failover and provider metadata."""
     def _run(key: str) -> dict:
         llm = ChatGoogleGenerativeAI(
             model=os.getenv("GEMINI_MODEL", "gemini-2.5-flash"),
@@ -324,32 +501,395 @@ def parse_jd_schedule(jd_text: str) -> dict:
         result: Any = chain.invoke({"jd_text": jd_text})
         return result.model_dump() if hasattr(result, "model_dump") else dict(result)
 
-    return _execute_with_key_rotation(
+    result, provider, fallback_used, fallback_reason = _execute_with_key_rotation_with_status(
         "parse_jd_schedule",
         _run,
         lambda: _fallback_parse_jd_schedule(jd_text),
     )
+    if isinstance(result, dict):
+        result["parsing_provider"] = provider
+        result["fallback_used"] = fallback_used
+        result["fallback_reason"] = fallback_reason
+    return result
 
 
 # ----------------- 4. Semantic Matching (Engine 5) -----------------
 
-def get_semantic_similarity(student_skills: list[str], required_skills: list[str]) -> float:
-    """Calculates match ratio between student skills and job requirements (0.0 to 1.0) using smart token and alias normalization."""
-    if not student_skills or not required_skills:
+# Default threshold is 0.72 (configurable via SEMANTIC_SIMILARITY_THRESHOLD env var).
+# Note: This threshold is a documented baseline heuristic for Gemini text-embedding-004 vectors,
+# and is not claimed as an empirically validated cutoff across arbitrary recruitment domains.
+DEFAULT_SEMANTIC_THRESHOLD: float = float(os.getenv("SEMANTIC_SIMILARITY_THRESHOLD", "0.72"))
+DEFAULT_EMBEDDING_MODEL: str = os.getenv("GEMINI_EMBEDDING_MODEL", "gemini-embedding-2-preview")
+DEFAULT_CACHE_SIZE: int = int(os.getenv("EMBEDDING_CACHE_SIZE", "1024"))
+
+_EMBEDDING_CACHE_LOCK = threading.Lock()
+_EMBEDDING_CACHE: OrderedDict[tuple[str, str], list[float]] = OrderedDict()
+
+
+def get_embedding_cache_size() -> int:
+    """Returns the current number of cached embedding entries."""
+    with _EMBEDDING_CACHE_LOCK:
+        return len(_EMBEDDING_CACHE)
+
+
+def clear_embedding_cache() -> None:
+    """Clears all in-memory cached embeddings."""
+    with _EMBEDDING_CACHE_LOCK:
+        _EMBEDDING_CACHE.clear()
+
+
+def _get_cached_embedding(model: str, text: str) -> list[float] | None:
+    key = (model, text.strip().lower())
+    with _EMBEDDING_CACHE_LOCK:
+        if key in _EMBEDDING_CACHE:
+            _EMBEDDING_CACHE.move_to_end(key)
+            return _EMBEDDING_CACHE[key]
+    return None
+
+
+def _put_cached_embeddings(model: str, text_vec_pairs: list[tuple[str, list[float]]], max_size: int = DEFAULT_CACHE_SIZE) -> None:
+    with _EMBEDDING_CACHE_LOCK:
+        for text, vec in text_vec_pairs:
+            key = (model, text.strip().lower())
+            if key in _EMBEDDING_CACHE:
+                _EMBEDDING_CACHE.move_to_end(key)
+            else:
+                if len(_EMBEDDING_CACHE) >= max_size:
+                    _EMBEDDING_CACHE.popitem(last=False)
+                _EMBEDDING_CACHE[key] = vec
+
+
+def compute_cosine_similarity(v1: list[float] | np.ndarray, v2: list[float] | np.ndarray) -> float:
+    """Computes cosine similarity between two numeric vectors in the [-1.0, 1.0] range."""
+    a = np.asarray(v1, dtype=np.float64)
+    b = np.asarray(v2, dtype=np.float64)
+    norm_a = float(np.linalg.norm(a))
+    norm_b = float(np.linalg.norm(b))
+    if norm_a == 0.0 or norm_b == 0.0:
         return 0.0
+    dot = float(np.dot(a, b))
+    sim = dot / (norm_a * norm_b)
+    return float(np.clip(sim, -1.0, 1.0))
+
+
+def embed_texts(texts: list[str], model: str | None = None) -> list[list[float]]:
+    """
+    Embeds a list of bounded text strings using Gemini GoogleGenerativeAIEmbeddings.
+    Checks the in-memory LRU cache first to prevent repeated calls for unchanged text.
+    Validates vectors against NaN, Inf, and near-zero norms.
+    """
+    if not texts:
+        return []
+
+    model_name = model or os.getenv("GEMINI_EMBEDDING_MODEL", DEFAULT_EMBEDDING_MODEL)
+
+    cached_vectors: dict[int, list[float]] = {}
+    missing_indices: list[int] = []
+    missing_texts: list[str] = []
+
+    for idx, text in enumerate(texts):
+        cached = _get_cached_embedding(model_name, text)
+        if cached is not None:
+            cached_vectors[idx] = cached
+        else:
+            missing_indices.append(idx)
+            missing_texts.append(text)
+
+    if not missing_texts:
+        return [cached_vectors[i] for i in range(len(texts))]
+
+    def _run_embedding(api_key: str) -> list[list[float]]:
+        emb_client = GoogleGenerativeAIEmbeddings(
+            model=model_name,
+            google_api_key=api_key,
+        )
+        raw_vecs = emb_client.embed_documents(missing_texts)
+        if not isinstance(raw_vecs, list) or len(raw_vecs) != len(missing_texts):
+            raise ValueError(f"Expected {len(missing_texts)} embedding vectors, got {len(raw_vecs) if isinstance(raw_vecs, list) else type(raw_vecs)}")
+
+        validated: list[list[float]] = []
+        for v in raw_vecs:
+            if not isinstance(v, (list, tuple)) or len(v) == 0:
+                raise ValueError("Embedding provider returned empty or non-sequence vector")
+            arr = np.asarray(v, dtype=np.float64)
+            if np.isnan(arr).any() or np.isinf(arr).any() or float(np.linalg.norm(arr)) < 1e-6:
+                raise ValueError("Embedding provider returned invalid vector (NaN, Inf, or near-zero norm)")
+            validated.append(arr.tolist())
+        return validated
+
+    new_vectors = _execute_with_key_rotation(
+        "embed_texts",
+        _run_embedding,
+        lambda: None
+    )
+
+    if new_vectors is None:
+        raise RuntimeError("Embedding provider failed to generate vectors across all keys.")
+
+    to_cache = [(missing_texts[i], new_vectors[i]) for i in range(len(missing_texts))]
+    _put_cached_embeddings(model_name, to_cache)
+
+    for idx, vec in zip(missing_indices, new_vectors):
+        cached_vectors[idx] = vec
+
+    return [cached_vectors[i] for i in range(len(texts))]
+
+
+def _deterministic_fallback(
+    student_skills: list[str],
+    required_skills: list[str],
+    resume_text: str = '',
+    threshold: float = DEFAULT_SEMANTIC_THRESHOLD
+) -> dict:
+    from students import match_required_skill
+    matched_skills = []
+    missing_skills = []
+    match_details = []
+
+    for req in required_skills:
+        is_match, matched_kws = match_required_skill(req, student_skills, resume_text)
+        if is_match:
+            matched_skills.append(req)
+            match_details.append({
+                'skill': req,
+                'matched': True,
+                'matched_by': matched_kws,
+                'similarity': 1.0,
+            })
+        else:
+            missing_skills.append(req)
+            match_details.append({
+                'skill': req,
+                'matched': False,
+                'matched_by': [],
+                'similarity': 0.0,
+            })
+
+    total = len(required_skills)
+    similarity = round(len(matched_skills) / max(1, total), 2) if total > 0 else 0.0
+    return {
+        'similarity': similarity,
+        'matched_skills': matched_skills,
+        'missing_skills': missing_skills,
+        'match_provider': 'deterministic_fallback',
+        'match_details': match_details,
+        'threshold_used': threshold,
+    }
+
+
+def semantic_match_skills(
+    student_skills: list[str],
+    required_skills: list[str],
+    resume_text: str = '',
+    threshold: float | None = None
+) -> dict:
+    """
+    Computes genuine embedding-based semantic matching between student parsed skills
+    and job requirements using cosine similarity.
+    If Gemini is unconfigured, errors, times out, or returns invalid vectors,
+    gracefully falls back to the deterministic rule-based matcher with clear attribution.
+    """
+    sim_threshold = threshold if threshold is not None else DEFAULT_SEMANTIC_THRESHOLD
+
+    if not required_skills:
+        return {
+            'similarity': 1.0,
+            'matched_skills': [],
+            'missing_skills': [],
+            'match_provider': 'gemini_embedding',
+            'match_details': [],
+            'threshold_used': sim_threshold,
+        }
+
+    if not student_skills:
+        return {
+            'similarity': 0.0,
+            'matched_skills': [],
+            'missing_skills': list(required_skills),
+            'match_provider': 'gemini_embedding',
+            'match_details': [
+                {'skill': r, 'matched': False, 'matched_by': [], 'similarity': 0.0}
+                for r in required_skills
+            ],
+            'threshold_used': sim_threshold,
+        }
+
+    # If Gemini is not configured, directly use deterministic fallback
+    if not gemini_is_configured():
+        return _deterministic_fallback(student_skills, required_skills, resume_text, sim_threshold)
+
+    # Prepare bounded texts: student skills and required skills
+    clean_student_skills = [s.strip() for s in student_skills if s and s.strip()][:50]
+    unique_student_skills = list(dict.fromkeys(clean_student_skills))
+
+    req_phrases: list[str] = []
+    for r in required_skills:
+        r_clean = r.strip()
+        if not r_clean:
+            continue
+        req_phrases.append(r_clean)
+        or_parts = [p.strip() for p in re.split(r'\s+or\s+|\s*/\s*', r_clean, flags=re.IGNORECASE) if p.strip()]
+        if len(or_parts) > 1:
+            req_phrases.extend(or_parts)
+        and_parts = [p.strip() for p in re.split(r'\s+and\s+|\s*&\s*', r_clean, flags=re.IGNORECASE) if p.strip()]
+        if len(and_parts) > 1:
+            req_phrases.extend(and_parts)
+
+    all_texts_to_embed = list(dict.fromkeys(unique_student_skills + [p for p in req_phrases if p]))
 
     try:
-        from students import match_required_skill
-        matched_count = 0
-        for req in required_skills:
-            matched, _ = match_required_skill(req, student_skills)
-            if matched:
-                matched_count += 1
-        return round(matched_count / max(1, len(required_skills)), 2)
-    except Exception:
-        s_set = {s.lower() for s in student_skills}
-        r_set = {s.lower() for s in required_skills}
-        return round(len(s_set & r_set) / max(1, len(r_set)), 2)
+        all_vectors = embed_texts(all_texts_to_embed)
+    except Exception as e:
+        print(f"[Semantic Matching] Embedding failed ({e}). Falling back to deterministic matcher.")
+        return _deterministic_fallback(student_skills, required_skills, resume_text, sim_threshold)
+
+    vec_map = {text: vec for text, vec in zip(all_texts_to_embed, all_vectors)}
+    student_vecs = [(s, vec_map[s]) for s in unique_student_skills if s in vec_map]
+
+    if not student_vecs:
+        return _deterministic_fallback(student_skills, required_skills, resume_text, sim_threshold)
+
+    def _match_single_phrase(phrase: str) -> tuple[bool, str, float]:
+        phrase_clean = phrase.strip()
+        phrase_vec = vec_map.get(phrase_clean)
+        if not phrase_vec or not student_vecs:
+            return False, "", 0.0
+
+        best_skill = ""
+        best_sim = -1.0
+        for s_text, s_vec in student_vecs:
+            sim = compute_cosine_similarity(phrase_vec, s_vec)
+            if sim > best_sim:
+                best_sim = sim
+                best_skill = s_text
+
+        is_match = best_sim >= sim_threshold
+        return is_match, best_skill, round(best_sim, 3)
+
+    matched_skills: list[str] = []
+    missing_skills: list[str] = []
+    match_details: list[dict] = []
+
+    for req in required_skills:
+        req_clean = req.strip()
+        if not req_clean:
+            continue
+
+        or_parts = [p.strip() for p in re.split(r'\s+or\s+|\s*/\s*', req_clean, flags=re.IGNORECASE) if p.strip()]
+        and_parts = [p.strip() for p in re.split(r'\s+and\s+|\s*&\s*', req_clean, flags=re.IGNORECASE) if p.strip()]
+
+        if len(or_parts) > 1:
+            matched_any = False
+            best_part_match = ""
+            best_part_sim = 0.0
+            for p in or_parts:
+                m_ok, m_skill, m_sim = _match_single_phrase(p)
+                if m_sim > best_part_sim:
+                    best_part_sim = m_sim
+                    best_part_match = m_skill
+                if m_ok:
+                    matched_any = True
+
+            w_ok, w_skill, w_sim = _match_single_phrase(req_clean)
+            if w_sim > best_part_sim:
+                best_part_sim = w_sim
+                best_part_match = w_skill
+            if w_ok:
+                matched_any = True
+
+            if matched_any:
+                matched_skills.append(req)
+                match_details.append({
+                    'skill': req,
+                    'matched': True,
+                    'matched_by': [best_part_match] if best_part_match else [],
+                    'similarity': best_part_sim,
+                })
+            else:
+                missing_skills.append(req)
+                match_details.append({
+                    'skill': req,
+                    'matched': False,
+                    'matched_by': [],
+                    'similarity': best_part_sim,
+                })
+
+        elif len(and_parts) > 1:
+            w_ok, w_skill, w_sim = _match_single_phrase(req_clean)
+            if w_ok:
+                matched_skills.append(req)
+                match_details.append({
+                    'skill': req,
+                    'matched': True,
+                    'matched_by': [w_skill],
+                    'similarity': w_sim,
+                })
+            else:
+                all_parts_ok = True
+                matched_sub_kws = []
+                min_sim = 1.0
+                for p in and_parts:
+                    p_ok, p_skill, p_sim = _match_single_phrase(p)
+                    if p_sim < min_sim:
+                        min_sim = p_sim
+                    if p_ok:
+                        matched_sub_kws.append(p_skill)
+                    else:
+                        all_parts_ok = False
+
+                if all_parts_ok and len(matched_sub_kws) == len(and_parts):
+                    matched_skills.append(req)
+                    match_details.append({
+                        'skill': req,
+                        'matched': True,
+                        'matched_by': matched_sub_kws,
+                        'similarity': min_sim,
+                    })
+                else:
+                    missing_skills.append(req)
+                    match_details.append({
+                        'skill': req,
+                        'matched': False,
+                        'matched_by': matched_sub_kws,
+                        'similarity': min_sim if min_sim < 1.0 else 0.0,
+                    })
+
+        else:
+            s_ok, s_skill, s_sim = _match_single_phrase(req_clean)
+            if s_ok:
+                matched_skills.append(req)
+                match_details.append({
+                    'skill': req,
+                    'matched': True,
+                    'matched_by': [s_skill],
+                    'similarity': s_sim,
+                })
+            else:
+                missing_skills.append(req)
+                match_details.append({
+                    'skill': req,
+                    'matched': False,
+                    'matched_by': [],
+                    'similarity': s_sim,
+                })
+
+    total = len(required_skills)
+    similarity = round(len(matched_skills) / max(1, total), 2) if total > 0 else 0.0
+
+    return {
+        'similarity': similarity,
+        'matched_skills': matched_skills,
+        'missing_skills': missing_skills,
+        'match_provider': 'gemini_embedding',
+        'match_details': match_details,
+        'threshold_used': sim_threshold,
+    }
+
+
+def get_semantic_similarity(student_skills: list[str], required_skills: list[str], resume_text: str = '') -> float:
+    """Calculates match ratio between student skills and job requirements (0.0 to 1.0) using genuine embedding vector search or fallback."""
+    res = semantic_match_skills(student_skills, required_skills, resume_text)
+    return float(res.get('similarity', 0.0))
 
 
 # ----------------- 5. Explanation Generation (Engine 6) -----------------

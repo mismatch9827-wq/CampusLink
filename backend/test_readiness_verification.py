@@ -3,6 +3,9 @@ import unittest
 from unittest.mock import MagicMock, patch
 from dotenv import load_dotenv
 
+patch("pymongo.MongoClient").start()
+patch("gridfs.GridFSBucket").start()
+
 load_dotenv()
 os.environ.setdefault("JWT_SECRET", "test-secret-key-12345")
 

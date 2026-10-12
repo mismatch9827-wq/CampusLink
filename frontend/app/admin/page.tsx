@@ -510,7 +510,7 @@ export default function AdminDashboard() {
                         No Historical Archives Uploaded Yet
                       </div>
                       <p className="mt-1 text-xs text-slate-500 max-w-sm mx-auto">
-                        New to CampusLink? Upload past placement batch records (2022–2025) in the
+                        New to CampusConnect? Upload past placement batch records (2022–2025) in the
                         Master Data Hub to unlock automated YoY growth charts and CTC trends.
                       </p>
                       <Link

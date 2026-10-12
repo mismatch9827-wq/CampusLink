@@ -5,7 +5,8 @@ from pydantic import BaseModel
 
 from auth import require_role
 from db import find_many, find_one, update_one, log_action
-from ai_tools import get_semantic_similarity, generate_explanation
+from ai_tools import get_semantic_similarity, generate_explanation, semantic_match_skills
+from students import match_required_skill
 
 router = APIRouter(tags=['ranking'])
 
@@ -21,14 +22,16 @@ def score_application(app: dict) -> dict:
 
     required_skills = drive.get('required_skills', [])
     student_skills = profile.get('parsed_skills', [])
+    resume_text = profile.get('resume_text', '')
 
-    req_lower = {x.lower() for x in required_skills}
-    student_lower = {x.lower() for x in student_skills}
-    common = req_lower & student_lower
-    missing = [x for x in required_skills if x.lower() not in student_lower]
+    # --- ENGINE 5: Genuine Semantic Embedding Similarity via Gemini Vectors ---
+    match_result = semantic_match_skills(student_skills, required_skills, resume_text)
+    matched_skills = match_result['matched_skills']
+    missing_skills = match_result['missing_skills']
+    similarity = match_result['similarity']
+    match_provider = match_result.get('match_provider', 'deterministic_fallback')
+    match_details = match_result.get('match_details', [])
 
-    # --- ENGINE 5: Semantic Embedding Similarity via Gemini Embeddings ---
-    similarity = get_semantic_similarity(student_skills, required_skills)
     skill_score = round(similarity * 100, 1)
 
     evidence = min(100, len(profile.get('projects', [])) * 28 + len(profile.get('certificates', [])) * 12)
@@ -40,16 +43,18 @@ def score_application(app: dict) -> dict:
     reasons = generate_explanation(
         role=drive.get('role', 'Candidate Role'),
         score=fit,
-        matched=sorted(common) if common else student_skills[:5],
-        missing=missing,
+        matched=matched_skills if matched_skills else student_skills[:5],
+        missing=missing_skills,
         projects=len(profile.get('projects', []))
     )
 
     return {
         'fit_score': fit,
         'reasons': reasons,
-        'matched_skills': sorted(common),
-        'missing_skills': missing
+        'matched_skills': matched_skills,
+        'missing_skills': missing_skills,
+        'match_provider': match_provider,
+        'match_details': match_details,
     }
 
 
@@ -73,13 +78,15 @@ def ranked(drive_id: str, recruiter: dict = Depends(require_role('recruiter'))):
                 'fit_score': scored['fit_score'],
                 'reasons': scored['reasons'],
                 'matched_skills': scored.get('matched_skills', []),
-                'missing_skills': scored.get('missing_skills', [])
+                'missing_skills': scored.get('missing_skills', []),
+                'match_provider': scored.get('match_provider', 'deterministic_fallback'),
             })
             # Attach the new scores to the current object so they render immediately
             app['fit_score'] = scored['fit_score']
             app['reasons'] = scored['reasons']
             app['matched_skills'] = scored.get('matched_skills', [])
             app['missing_skills'] = scored.get('missing_skills', [])
+            app['match_provider'] = scored.get('match_provider', 'deterministic_fallback')
 
         master = find_one('master_students', {'id': app['student_id']}) or {}
         profile = find_one('students', {'student_id': app['student_id']}) or {}
@@ -88,6 +95,7 @@ def ranked(drive_id: str, recruiter: dict = Depends(require_role('recruiter'))):
             **app,
             'matched_skills': app.get('matched_skills', []),
             'missing_skills': app.get('missing_skills', []),
+            'match_provider': app.get('match_provider', 'deterministic_fallback'),
             'student_name': master.get('name'),
             'branch': master.get('branch'),
             'cgpa': master.get('cgpa'),

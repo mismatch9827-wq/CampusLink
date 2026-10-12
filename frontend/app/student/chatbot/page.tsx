@@ -18,7 +18,7 @@ export default function ChatbotPage() {
                 <Bot size={19} />
               </span>
               <div>
-                <h2 className="text-base font-black">CampusLink Assistant</h2>
+                <h2 className="text-base font-black">CampusConnect Assistant</h2>
                 <p className="text-[10px] text-slate-500">
                   Explains rules — it does not override placement-cell
                   decisions.

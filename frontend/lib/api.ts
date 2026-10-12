@@ -67,6 +67,9 @@ export const api = {
       warnings: string[];
       ocr_used: boolean;
       manual_review_required: boolean;
+      parsing_provider?: string;
+      fallback_used?: boolean;
+      fallback_reason?: string;
     }>('/drives/parse-pdf', { method: 'POST', body: form });
   },
   studentProfile: () => request<Student>('/students/me'),

@@ -175,7 +175,8 @@ def verify_application(application_id: str, body: DecisionBody, admin: dict = De
             'fit_score': scored['fit_score'],
             'reasons': scored['reasons'],
             'matched_skills': scored.get('matched_skills', []),
-            'missing_skills': scored.get('missing_skills', [])
+            'missing_skills': scored.get('missing_skills', []),
+            'match_provider': scored.get('match_provider', 'deterministic_fallback'),
         })
     updated=update_one('applications', {'id':application_id}, fields)
     
@@ -224,7 +225,8 @@ def batch_verify_applications(body: BatchVerifyBody, admin: dict = Depends(requi
                 'fit_score': scored['fit_score'],
                 'reasons': scored['reasons'],
                 'matched_skills': scored.get('matched_skills', []),
-                'missing_skills': scored.get('missing_skills', [])
+                'missing_skills': scored.get('missing_skills', []),
+                'match_provider': scored.get('match_provider', 'deterministic_fallback'),
             })
         update_one('applications', {'id': app_id}, fields)
         drive = find_one('drives', {'id': app.get('drive_id')}) or {}

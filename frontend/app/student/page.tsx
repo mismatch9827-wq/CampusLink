@@ -102,9 +102,18 @@ export default function StudentDashboard() {
         readiness_score: r.readiness_score,
         readiness_level: r.readiness_level,
         skill_gaps: r.skill_gaps,
+        resume_fallback_used: r.fallback_used,
+        resume_parsing_provider: r.parsing_provider,
+        resume_fallback_reason: r.fallback_reason,
       }))
       loadData()
-      setUploadMessage('Resume parsed, GitHub repositories scanned, and readiness refreshed!')
+      if (r.fallback_used) {
+        setUploadMessage(
+          `Resume parsed with fallback rules (${r.fallback_reason || 'AI unavailable'}). Review skills below.`
+        )
+      } else {
+        setUploadMessage('Resume parsed with Gemini AI, GitHub repositories scanned, and readiness refreshed!')
+      }
     } catch (err) {
       setUploadMessage(err instanceof Error ? err.message : 'Could not upload resume')
     }
@@ -181,6 +190,24 @@ export default function StudentDashboard() {
                   </label>
                   {uploadMessage && <span className="text-[10px] font-semibold text-teal-800">{uploadMessage}</span>}
                 </div>
+                {student.resume_fallback_used && (
+                  <div className="mt-3 flex items-start gap-2.5 rounded-xl border border-amber-300 bg-amber-50/90 p-3 text-xs text-amber-900 shadow-2xs">
+                    <AlertTriangle size={16} className="mt-0.5 shrink-0 text-amber-600" />
+                    <div>
+                      <div className="flex items-center gap-2">
+                        <span className="font-bold text-amber-950">
+                          Fallback resume parser active ({student.resume_parsing_provider || 'rule_based_fallback'})
+                        </span>
+                        <span className="rounded-full bg-amber-200/80 px-2 py-0.5 text-[9px] font-bold text-amber-900">
+                          Review skills
+                        </span>
+                      </div>
+                      <p className="mt-0.5 text-[11px] text-amber-800 leading-normal">
+                        {student.resume_fallback_reason || 'AI parsing was unavailable during resume scan.'} Please verify your technical skills, CGPA, and project repositories below.
+                      </p>
+                    </div>
+                  </div>
+                )}
               </div>
             </div>
           </div>
@@ -211,7 +238,11 @@ export default function StudentDashboard() {
             <div>
               <div className="flex items-center justify-between">
                 <h3 className="text-sm font-extrabold text-ink">Readiness breakdown</h3>
-                <span className="text-[10px] font-semibold text-slate-400">Live multi-pillar calculation</span>
+                <span className="text-[10px] font-semibold text-slate-400">
+                  {student.unassessed_categories && student.unassessed_categories.length > 0
+                    ? `${student.unassessed_categories.length} category unassessed`
+                    : 'Live multi-pillar calculation'}
+                </span>
               </div>
               <div className="mt-4 space-y-3.5">
                 {[
@@ -219,18 +250,27 @@ export default function StudentDashboard() {
                   ['Projects & code evidence', student.breakdown.projects, `15% weight · ${verifiedCount} verified`],
                   ['Aptitude score', student.breakdown.aptitude, '10% weight'],
                   ['Communication score', student.breakdown.communication, '10% weight'],
-                ].map(([n, v, sub]) => (
-                  <div key={n as string}>
-                    <div className="mb-1 flex justify-between items-baseline text-[11px]">
-                      <div>
-                        <span className="font-bold text-slate-700">{n as string}</span>
-                        <span className="ml-2 text-[10px] text-slate-400">({sub as string})</span>
+                ].map(([n, v, sub]) => {
+                  const isUnassessed = v === null || v === undefined
+                  return (
+                    <div key={n as string}>
+                      <div className="mb-1 flex justify-between items-baseline text-[11px]">
+                        <div>
+                          <span className="font-bold text-slate-700">{n as string}</span>
+                          <span className="ml-2 text-[10px] text-slate-400">({sub as string})</span>
+                        </div>
+                        {isUnassessed ? (
+                          <span className="rounded bg-amber-50 px-1.5 py-0.5 text-[10px] font-bold text-amber-700 border border-amber-200">
+                            Not assessed
+                          </span>
+                        ) : (
+                          <b className="text-ink">{v}%</b>
+                        )}
                       </div>
-                      <b className="text-ink">{v}%</b>
+                      <Progress value={isUnassessed ? 0 : Number(v)} />
                     </div>
-                    <Progress value={Number(v)} />
-                  </div>
-                ))}
+                  )
+                })}
               </div>
             </div>
           </div>

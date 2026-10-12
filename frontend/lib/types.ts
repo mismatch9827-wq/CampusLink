@@ -46,11 +46,14 @@ export interface Student {
   readiness_score: number
   readiness_level: string
   skill_gaps: string[]
+  aptitude?: number | null
+  communication?: number | null
+  unassessed_categories?: string[]
   breakdown: {
     technical: number
     projects: number
-    aptitude: number
-    communication: number
+    aptitude: number | null
+    communication: number | null
   }
   journey?: {
     id: string
@@ -62,6 +65,9 @@ export interface Student {
   target_role?: string
   target_company?: string
   target_fit?: number
+  resume_parsing_provider?: string
+  resume_fallback_used?: boolean
+  resume_fallback_reason?: string
 }
 
 

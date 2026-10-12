@@ -73,7 +73,7 @@ export default function LoginPage() {
             One record.<br />Three dashboards.<br /><span className="text-[#8fd5c9]">Zero placement chaos.</span>
           </h1>
           <p className="mt-6 max-w-lg text-sm leading-7 text-white/62">
-            CampusLink connects students, recruiters and the placement cell through a single verified workflow — from readiness to shortlist to joining.
+            CampusConnect connects students, recruiters and the placement cell through a single verified workflow — from readiness to shortlist to joining.
           </p>
           <div className="mt-8 grid gap-3 sm:grid-cols-3">
             {[
@@ -95,14 +95,9 @@ export default function LoginPage() {
 
       <section className="flex min-h-screen items-center justify-center bg-canvas px-5 py-10">
         <div className="w-full max-w-md">
-          <div className="mb-8 lg:hidden">
+          <div className="mb-6 flex items-center justify-between">
             <Brand />
-          </div>
-
-          {/* Real Backend Live Indicator */}
-          <div className="mb-4 flex items-center justify-between">
-            <div className="eyebrow">Secure access</div>
-            <div className="flex items-center gap-1.5 rounded-full border px-2.5 py-1 text-[10px] font-bold">
+            <div className="flex items-center gap-1.5 rounded-full border border-slate-200 bg-white px-2.5 py-1 text-[10px] font-bold shadow-2xs">
               {backendStatus.loading ? (
                 <span className="text-slate-400">Checking backend...</span>
               ) : backendStatus.online ? (

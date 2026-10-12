@@ -312,8 +312,17 @@ async def parse_jd_pdf(file: UploadFile = File(...), recruiter: dict = Depends(r
     if not text:
         raise HTTPException(status_code=422, detail='No readable text was found. Check OCR support or enter the job requirements manually.')
     extracted = parse_jd(text[:25000])
-    if not gemini_is_configured():
-        warnings.append('Gemini is not configured; basic rule-based extraction was used. Review every field.')
+    fallback_used = bool(extracted.get('fallback_used', False))
+    provider = extracted.get('parsing_provider', 'gemini' if not fallback_used else 'rule_based_fallback')
+    fallback_reason = extracted.get('fallback_reason')
+
+    if fallback_used:
+        if fallback_reason:
+            warnings.append(f"{fallback_reason}. Review every field before submitting.")
+        else:
+            warnings.append('Rule-based fallback extraction was used. Review every field before submitting.')
+
+    print(f"[Drive JD Parse] Recruiter '{recruiter.get('id')}' parsed JD using provider '{provider}' (fallback_used={fallback_used})")
 
     return {
         "message": "PDF text and tables extracted; review the fields before submitting",
@@ -322,6 +331,9 @@ async def parse_jd_pdf(file: UploadFile = File(...), recruiter: dict = Depends(r
         "warnings": warnings,
         "ocr_used": ocr_used,
         "manual_review_required": True,
+        "parsing_provider": provider,
+        "fallback_used": fallback_used,
+        "fallback_reason": fallback_reason,
     }
 
 

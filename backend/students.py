@@ -71,21 +71,26 @@ def readiness(master: dict, profile: dict) -> tuple[float, str, list[str]]:
             else:
                 unverified_count += 1
 
-    # Verified projects with real code award 35 pts each; unverified self-declared award only 12 pts
     project_score = min(100, verified_count * 35 + unverified_count * 12)
     cert_score = min(len(profile.get('certificates', [])) * 20, 100)
-    aptitude = float(master.get('aptitude') or 0)
-    communication = float(master.get('communication') or 0)
-    mock = float(master.get('mock_interview') or 0)
+
+    raw_aptitude = master.get('aptitude')
+    aptitude_pts = float(raw_aptitude) if raw_aptitude is not None else 0.0
+
+    raw_comm = master.get('communication')
+    comm_pts = float(raw_comm) if raw_comm is not None else 0.0
+
+    raw_mock = master.get('mock_interview')
+    mock_pts = float(raw_mock) if raw_mock is not None else 0.0
 
     score = round(
         academic * 0.20 +
         technical * 0.30 +
         project_score * 0.15 +
         cert_score * 0.10 +
-        aptitude * 0.10 +
-        communication * 0.10 +
-        mock * 0.05,
+        aptitude_pts * 0.10 +
+        comm_pts * 0.10 +
+        mock_pts * 0.05,
         1
     )
     level = 'Not Ready' if score < 40 else 'Developing' if score < 60 else 'Ready' if score < 80 else 'Highly Employable'
@@ -97,7 +102,8 @@ def readiness(master: dict, profile: dict) -> tuple[float, str, list[str]]:
     for d in active_drives:
         if d.get('status') != 'drive_rejected':
             branches = d.get('branches', [])
-            if not branches or student_branch in branches:
+            normalized_branches = {str(b).strip().upper() for b in branches if b}
+            if not branches or student_branch in branches or str(student_branch).strip().upper() in normalized_branches:
                 campus_skills.extend(d.get('required_skills', []))
 
     if campus_skills:
@@ -151,8 +157,14 @@ def _public_student(master: dict, profile: dict) -> dict:
                 })
 
     project_score = min(100, verified_count * 35 + (len(projects) - verified_count) * 12)
-    aptitude = int(master.get('aptitude') or 0)
-    communication = int(master.get('communication') or 0)
+    raw_aptitude = master.get('aptitude')
+    aptitude = int(round(float(raw_aptitude))) if raw_aptitude is not None else None
+    raw_comm = master.get('communication')
+    communication = int(round(float(raw_comm))) if raw_comm is not None else None
+
+    unassessed_categories = [
+        cat for cat, val in [('aptitude', aptitude), ('communication', communication)] if val is None
+    ]
     
     # Query real applications for this student
     apps = find_many('applications', {'student_id': master['id']})
@@ -196,10 +208,16 @@ def _public_student(master: dict, profile: dict) -> dict:
             'aptitude': aptitude,
             'communication': communication,
         },
+        'unassessed_categories': unassessed_categories,
+        'aptitude': aptitude,
+        'communication': communication,
         'journey': journey,
         'target_role': target_role,
         'target_company': target_company,
         'target_fit': min(98, round(score * 1.05)),
+        'resume_parsing_provider': profile.get('resume_parsing_provider'),
+        'resume_fallback_used': profile.get('resume_fallback_used'),
+        'resume_fallback_reason': profile.get('resume_fallback_reason'),
     }
 
 
@@ -257,6 +275,11 @@ async def upload_resume(file: UploadFile = File(...), user: dict = Depends(requi
         
     extracted_data = parse_resume(text[:25000])
     raw_projects = extracted_data.get('projects', [])
+    parsing_provider = extracted_data.get('parsing_provider', 'rule_based_fallback')
+    fallback_used = bool(extracted_data.get('fallback_used', True))
+    fallback_reason = extracted_data.get('fallback_reason')
+
+    print(f"[Student Resume Parse] Student '{master.get('id')}' parsed resume using provider '{parsing_provider}' (fallback_used={fallback_used})")
 
     # Automatically scan for GitHub project links in resume text
     github_links = re.findall(r'(?:https?://)?(?:www\.)?github\.com/[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+', text)
@@ -283,7 +306,10 @@ async def upload_resume(file: UploadFile = File(...), user: dict = Depends(requi
         'parsed_skills': extracted_data.get('skills', []), 
         'projects': processed_projects,
         'certificates': extracted_data.get('certificates', []),
-        'resume_claimed_cgpa': extracted_data.get('cgpa')
+        'resume_claimed_cgpa': extracted_data.get('cgpa'),
+        'resume_parsing_provider': parsing_provider,
+        'resume_fallback_used': fallback_used,
+        'resume_fallback_reason': fallback_reason,
     }
     
     if find_one('students', {'student_id': master['id']}):
@@ -299,7 +325,10 @@ async def upload_resume(file: UploadFile = File(...), user: dict = Depends(requi
         'certificates': profile['certificates'],
         'readiness_score': score, 
         'readiness_level': level, 
-        'skill_gaps': gaps
+        'skill_gaps': gaps,
+        'parsing_provider': parsing_provider,
+        'fallback_used': fallback_used,
+        'fallback_reason': fallback_reason,
     }
 
 
@@ -323,12 +352,24 @@ def student_readiness(user: dict = Depends(require_role('student'))):
             f"Link GitHub repositories for your {unverified_count} unverified project(s) to boost evidence score by up to +{min(50, unverified_count * 23)} points."
         )
 
-    aptitude = float(master.get('aptitude') or 0)
-    mock = float(master.get('mock_interview') or 0)
-    if aptitude < 65:
-        recommendations.append(f"Aptitude score is {int(aptitude)}/100. Practice quantitative tests to pass recruiter Gate 1 cutoffs.")
-    elif mock < 65:
-        recommendations.append(f"Mock interview score is {int(mock)}/100. Complete an additional technical mock round.")
+    raw_aptitude = master.get('aptitude')
+    raw_comm = master.get('communication')
+    raw_mock = master.get('mock_interview')
+
+    unassessed = []
+    if raw_aptitude is None:
+        unassessed.append('Aptitude')
+        recommendations.append("Aptitude assessment is pending. Complete the official assessment to establish your baseline score.")
+    elif float(raw_aptitude) < 65:
+        recommendations.append(f"Aptitude score is {int(float(raw_aptitude))}/100. Practice quantitative tests to pass recruiter Gate 1 cutoffs.")
+
+    if raw_comm is None:
+        unassessed.append('Communication')
+
+    if raw_mock is None:
+        pass
+    elif float(raw_mock) < 65:
+        recommendations.append(f"Mock interview score is {int(float(raw_mock))}/100. Complete an additional technical mock round.")
 
     if gaps:
         recommendations.append(f"Close the '{gaps[0]}' skill gap demanded by active campus recruitment drives.")
@@ -339,6 +380,7 @@ def student_readiness(user: dict = Depends(require_role('student'))):
         'score': score,
         'level': level,
         'skill_gaps': gaps,
+        'unassessed_categories': unassessed,
         'recommendations': recommendations[:3]
     }
 
@@ -368,12 +410,16 @@ def match_required_skill(required_item: str, student_skills: list[str], resume_t
         'oop': {'oop', 'oops', 'object-oriented programming', 'object oriented'},
         'oop basics': {'oop', 'oops', 'object-oriented programming', 'object oriented'},
         'dsa': {'dsa', 'data structures', 'algorithms', 'data structures & algorithms', 'data structures and algorithms'},
-        'data structures & algorithms': {'dsa', 'data structures', 'algorithms', 'data structures & algorithms'},
+        'data structures & algorithms': {'dsa', 'data structures & algorithms', 'data structures and algorithms'},
+        'data structures and algorithms': {'dsa', 'data structures & algorithms', 'data structures and algorithms'},
         'rest apis': {'rest', 'rest api', 'rest apis', 'restful', 'api', 'fastapi', 'flask', 'express'},
         'sql': {'sql', 'mysql', 'postgresql', 'postgres', 'sqlite', 'oracle'},
         'mongodb': {'mongodb', 'mongo', 'nosql'},
         'git': {'git', 'github', 'gitlab', 'version control'},
-        'html & css': {'html', 'css', 'html5', 'css3', 'web development'},
+        'html': {'html', 'html5'},
+        'css': {'css', 'css3'},
+        'html & css': {'html & css', 'html and css', 'html/css'},
+        'html and css': {'html & css', 'html and css', 'html/css'},
         'problem solving': {'problem solving', 'competitive programming', 'leetcode', 'hackerrank', 'dsa', 'algorithms'},
         'communication skills': {'communication', 'presentation', 'teamwork', 'leadership'},
         'logical reasoning': {'reasoning', 'aptitude', 'problem solving', 'analytical'},
@@ -404,21 +450,59 @@ def match_required_skill(required_item: str, student_skills: list[str], resume_t
 
         return False, ''
 
+    def whole_phrase_matches(phrase: str) -> tuple[bool, str]:
+        cleaned = normalize_skill_token(phrase)
+        if not cleaned:
+            return False, ''
+        if cleaned in student_skills_clean:
+            return True, phrase.strip()
+        for alias_key, aliases in ALIASES.items():
+            if cleaned in aliases or cleaned == alias_key:
+                for a in aliases:
+                    if a in student_skills_clean:
+                        return True, a
+                    if resume_lower and f" {a} " in resume_lower:
+                        return True, a
+        if resume_lower and (f" {cleaned} " in resume_lower or f"/{cleaned}" in resume_lower or f"{cleaned}/" in resume_lower):
+            return True, phrase.strip()
+        return False, ''
+
+    def match_atom_or_and(item: str) -> tuple[bool, list[str]]:
+        item_clean = item.strip()
+        and_parts = [p.strip() for p in re.split(r'\s+and\s+|\s*&\s*', item_clean, flags=re.IGNORECASE) if p.strip()]
+        if len(and_parts) > 1:
+            w_ok, w_kw = whole_phrase_matches(item_clean)
+            if w_ok:
+                return True, [w_kw]
+            sub = []
+            for p in and_parts:
+                ok, kw = atom_matches(p)
+                if ok:
+                    sub.append(kw)
+                else:
+                    return False, []
+            return True, sub
+        ok, kw = atom_matches(item_clean)
+        if ok:
+            return True, [kw]
+        return False, []
+
     # Handle OR-separated skills: "Python or Java", "SQL / MongoDB"
     or_parts = [p.strip() for p in re.split(r'\s+or\s+|\s*/\s*', req_clean, flags=re.IGNORECASE) if p.strip()]
     if len(or_parts) > 1:
         matched_sub = []
         for part in or_parts:
-            ok, m_kw = atom_matches(part)
+            ok, kws = match_atom_or_and(part)
             if ok:
-                matched_sub.append(m_kw)
+                matched_sub.extend(kws)
         if matched_sub:
             return True, matched_sub
+        return False, []
 
     # Handle AND-separated skills: "HTML & CSS", "Data Structures & Algorithms"
     and_parts = [p.strip() for p in re.split(r'\s+and\s+|\s*&\s*', req_clean, flags=re.IGNORECASE) if p.strip()]
     if len(and_parts) > 1:
-        whole_ok, whole_kw = atom_matches(req_clean)
+        whole_ok, whole_kw = whole_phrase_matches(req_clean)
         if whole_ok:
             return True, [whole_kw]
         matched_sub = []
@@ -426,8 +510,9 @@ def match_required_skill(required_item: str, student_skills: list[str], resume_t
             ok, m_kw = atom_matches(part)
             if ok:
                 matched_sub.append(m_kw)
-        if matched_sub:
-            return True, matched_sub
+            else:
+                return False, []
+        return True, matched_sub
 
     # Single atom check
     ok, m_kw = atom_matches(req_clean)
@@ -508,8 +593,13 @@ def is_eligible(master: dict, drive: dict) -> tuple[bool, str]:
     reasons = []
     if float(master.get('cgpa', 0)) < float(drive.get('min_cgpa', 0)):
         reasons.append(f"CGPA {master.get('cgpa')} is below {drive.get('min_cgpa')}")
-    if master.get('branch') not in drive.get('branches', []):
-        reasons.append(f"Branch {master.get('branch')} is not eligible")
+    branches = drive.get('branches') or []
+    if branches:
+        student_branch = master.get('branch')
+        normalized_student_branch = str(student_branch).strip().upper() if student_branch else ''
+        normalized_drive_branches = {str(b).strip().upper() for b in branches if b}
+        if student_branch not in branches and normalized_student_branch not in normalized_drive_branches:
+            reasons.append(f"Branch {master.get('branch')} is not eligible")
     if int(master.get('backlogs', 0)) > int(drive.get('max_backlogs', 0)):
         reasons.append(f"Backlogs exceed allowed maximum ({drive.get('max_backlogs')})")
     return (not reasons, 'All academic eligibility rules are satisfied.' if not reasons else '; '.join(reasons))
@@ -638,7 +728,7 @@ async def upload_master_students(file: UploadFile = File(...), admin: dict = Dep
         raise HTTPException(status_code=400, detail="File is empty")
         
     def _parse_opt_float(val, field: str, row_number: int):
-        if val is None or str(val).strip() in ('', 'None', 'null', 'nan'):
+        if val is None or str(val).strip().lower() in ('', 'none', 'null', 'nan', 'n/a', 'na', '-', 'not assessed', 'unassessed'):
             return None
         try:
             score = float(val)

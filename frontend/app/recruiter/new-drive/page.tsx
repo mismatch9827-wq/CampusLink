@@ -3,6 +3,7 @@
 import React, { useState } from 'react'
 import { useRouter } from 'next/navigation'
 import {
+  AlertTriangle,
   BriefcaseBusiness,
   Building2,
   CalendarDays,
@@ -31,6 +32,7 @@ export default function NewDrivePage() {
   const [uploading, setUploading] = useState(false)
   const [jdPdfFile, setJdPdfFile] = useState<File | null>(null)
   const [uploadStatus, setUploadStatus] = useState('')
+  const [fallbackInfo, setFallbackInfo] = useState<{ used: boolean; provider: string; reason?: string } | null>(null)
   const [submitError, setSubmitError] = useState('')
 
   const [form, setForm] = useState<{
@@ -67,6 +69,11 @@ export default function NewDrivePage() {
     try {
       const res = await api.parseJdPdf(file)
       setJdPdfFile(file)
+      setFallbackInfo({
+        used: Boolean(res.fallback_used),
+        provider: res.parsing_provider || (res.fallback_used ? 'rule_based_fallback' : 'gemini'),
+        reason: res.fallback_reason,
+      })
       const data = res.extracted_data || {}
       setForm(prev => ({
         ...prev,
@@ -328,6 +335,25 @@ export default function NewDrivePage() {
               {/* Extracted Details & Engine Data (Auto-populated from PDF) */}
               {jdPdfFile && (
                 <div className="space-y-4">
+                  {fallbackInfo?.used && (
+                    <div className="rounded-2xl border border-amber-300 bg-amber-50/90 p-4.5 shadow-2xs flex items-start gap-3">
+                      <AlertTriangle size={18} className="mt-0.5 shrink-0 text-amber-600" />
+                      <div>
+                        <div className="flex items-center gap-2">
+                          <span className="text-xs font-bold text-amber-950">
+                            Fallback parser active ({fallbackInfo.provider})
+                          </span>
+                          <span className="rounded-full bg-amber-200/80 px-2.5 py-0.5 text-[10px] font-bold text-amber-900">
+                            Review Required
+                          </span>
+                        </div>
+                        <p className="mt-1 text-xs text-amber-800 leading-relaxed">
+                          {fallbackInfo.reason || 'Gemini AI was unavailable. Rule-based fallback extraction was used.'} Please carefully verify the extracted company, required skills, and eligibility cutoffs below before posting this drive.
+                        </p>
+                      </div>
+                    </div>
+                  )}
+
                   {/* Job & Eligibility Requirements */}
                   <div className="rounded-2xl border border-slate-200 bg-white p-5 shadow-2xs">
                     <div className="flex items-center justify-between border-b border-slate-100 pb-3">
